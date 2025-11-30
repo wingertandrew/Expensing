@@ -15,9 +15,9 @@
 
 TaxHacker is a self-hosted accounting app designed for freelancers, indie hackers, and small businesses who want to save time and automate expense and income tracking using the power of modern AI.
 
-Upload photos of receipts, invoices, or PDFs, and TaxHacker will automatically recognize and extract all the important data you need for accounting: product names, amounts, items, dates, merchants, taxes, and save it into a structured Excel-like database. You can even create custom fields with your own AI prompts to extract any specific information you need.
+Upload photos of receipts, invoices, or PDFs, and TaxHacker will automatically recognize and extract all the important data you need for accounting: product names, amounts, items, dates, merchants, taxes, and save it into a structured Excel-like database. Bulk import transactions from CSV files with smart format detection for Amazon Business Order Reports, American Express statements, and custom formats—with intelligent duplicate prevention to keep your records clean.
 
-The app features automatic currency conversion (including crypto!) based on historical exchange rates from the transaction date. With built-in filtering, multi-project support, import/export capabilities, and custom categories, TaxHacker simplifies reporting and makes tax filing a bit easier.
+The app features automatic currency conversion (including crypto!) based on historical exchange rates from the transaction date. With built-in filtering, multi-project support, import/export capabilities, custom categories, and advanced CSV import with duplicate matching, TaxHacker simplifies reporting and makes tax filing a bit easier.
 
 > 🎥 [Watch demo video](https://taxhacker.app/landing/video.mp4)
 
@@ -44,7 +44,24 @@ Snap a photo of any receipt or upload an invoice PDF, and TaxHacker will automat
 
 TaxHacker works with a wide variety of documents, including store receipts, restaurant bills, invoices, bank statements, letters, even handwritten receipts. It handles any language and any currency with ease.
 
-### `2` Multi-currency support with automatic conversion (even crypto!)
+### `2` Import from CSV with smart format detection and duplicate matching
+
+![CSV Import](public/landing/transactions-big.webp)
+
+Import transactions in bulk from CSV files with automatic format detection and intelligent duplicate prevention. TaxHacker recognizes different CSV formats and adapts processing accordingly.
+
+- **Multi-format support**: Automatically detects Amazon Business Order Reports, American Express statements, and generic CSV files
+- **Smart aggregation**: Amazon CSVs with multiple item rows are automatically grouped into single transactions (typically 80-85% reduction in duplicate entries)
+- **Duplicate detection**: Advanced matching algorithm prevents duplicate imports by comparing amounts and dates (±3 days tolerance)
+- **Auto-merge capability**: High-confidence matches (≥90%) are automatically merged; medium-confidence (70-89%) flagged for manual review
+- **Business metadata**: Captures GL codes, departments, cost centers, project codes, and custom fields from Amazon Business reports
+- **Line item preservation**: Multi-item orders maintain full detail with ASIN, brand, pricing breakdown, and individual item information
+- **Import history**: Track all CSV imports with detailed statistics, review flagged matches, and audit merged transactions
+- **Flexible mapping**: Generic CSVs allow custom column mapping to match your data structure
+
+TaxHacker intelligently processes your data: Amazon orders with 14 items become a single transaction with line items, while AmEx statements import row-by-row. The matching system uses payment amounts and dates to prevent duplicates across multiple imports.
+
+### `3` Multi-currency support with automatic conversion (even crypto!)
 
 ![Currency Conversion](public/landing/multi-currency.webp)
 
@@ -55,7 +72,7 @@ TaxHacker automatically detects currencies in your documents and converts them t
 - **All-world coverage**: Support for 170+ world currencies and 14 popular cryptocurrencies (BTC, ETH, LTC, DOT, and more)
 - **Flexible input**: Manual entry is always available when you need more control
 
-### `3` Organize your transactions using fully customizable categories, projects and fields
+### `4` Organize your transactions using fully customizable categories, projects and fields
 
 ![Transactions Table](public/landing/transactions-big.webp)
 
@@ -68,7 +85,7 @@ Adapt TaxHacker to your unique needs with unlimited customization options. Creat
 - **AI-powered extraction**: Write your own prompts to extract any custom information from documents
 - **Bulk operations**: Process multiple documents or transactions at once
 
-### `4` Customize any LLM prompt. Even system ones
+### `5` Customize any LLM prompt. Even system ones
 
 ![Custom Categories](public/landing/custom-llm.webp)
 
@@ -82,7 +99,7 @@ Take full control of how TaxHacker's AI processes your documents. Write custom A
 
 TaxHacker is 100% adaptable and tunable to your unique requirements — whether you need to extract emails, addresses, project codes, or any other custom information from your documents.
 
-### `5` Flexible data filtering and export
+### `6` Flexible data filtering and export
 
 ![Data Export](public/landing/export.webp)
 
@@ -93,7 +110,7 @@ Once your documents are processed, easily view, filter, and export your complete
 - **Tax-ready reports**: Generate comprehensive reports for your accountant or tax advisor
 - **Data portability**: Download complete data archives to migrate to other services—your data stays yours
 
-### `6` Self-hosted mode for data privacy
+### `7` Self-hosted mode for data privacy
 
 ![Self-hosting](docs/screenshots/exported_archive.png)
 
@@ -157,6 +174,14 @@ Configure TaxHacker for your specific needs with these environment variables:
 | `SELF_HOSTED_MODE` | No | Set to "true" for self-hosting: enables auto-login, custom API keys, and additional features | `true` |
 | `DISABLE_SIGNUP` | No | Disable new user registration on your instance | `false` |
 | `BETTER_AUTH_SECRET` | Yes | Secret key for authentication (minimum 16 characters) | `your-secure-random-key` |
+| `RECEIPT_MATCH_ENABLED` | No | Enable automatic duplicate detection for CSV imports | `true` (default) |
+| `RECEIPT_MATCH_AUTO_MERGE_THRESHOLD` | No | Confidence threshold (0-100) for automatic merging of duplicate transactions | `90` (default) |
+
+**CSV Import Matching:**
+- When `RECEIPT_MATCH_ENABLED=true`, imported CSV transactions are automatically checked for duplicates
+- Matches ≥90% confidence (or custom threshold) are auto-merged
+- Matches 70-89% confidence are flagged for manual review
+- Import history tracks all merges and allows reviewing flagged matches
 
 You can also configure LLM provider settings in the application or via environment variables:
 
