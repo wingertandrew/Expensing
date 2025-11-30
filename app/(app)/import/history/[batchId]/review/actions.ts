@@ -1,0 +1,203 @@
+"use server"
+
+import { getCurrentUser } from "@/lib/auth"
+import { approveMatch, rejectMatch, getTransactionMatchById } from "@/models/transaction-matches"
+import { mergeTransaction } from "@/lib/matching/merger"
+import { getTransactionById } from "@/models/transactions"
+import { revalidatePath } from "next/cache"
+
+export type ActionState<T = null> = {
+  success: boolean
+  error?: string
+  data?: T
+} | null
+
+/**
+ * Approve a flagged match and merge the transaction
+ */
+export async function approveMatchAction(
+  _prevState: ActionState | null,
+  formData: FormData
+): Promise<ActionState<{ matchId: string }>> {
+  try {
+    const user = await getCurrentUser()
+    const matchId = formData.get("matchId") as string
+    const batchId = formData.get("batchId") as string
+
+    if (!matchId || !batchId) {
+      return { success: false, error: "Missing match ID or batch ID" }
+    }
+
+    // Get the match details
+    const match = await getTransactionMatchById(matchId)
+    if (!match) {
+      return { success: false, error: "Match not found" }
+    }
+
+    // Get the transaction
+    const transaction = await getTransactionById(match.transactionId, user.id)
+    if (!transaction) {
+      return { success: false, error: "Transaction not found" }
+    }
+
+    // Parse CSV data to get the fields to merge
+    const csvData = match.csvData as Record<string, unknown>
+
+    // Perform the merge
+    const { mergedFields } = await mergeTransaction(
+      transaction,
+      csvData,
+      match.confidence
+    )
+
+    // Mark the match as approved
+    await approveMatch(matchId, user.id, mergedFields)
+
+    // Revalidate paths
+    revalidatePath(`/import/history/${batchId}`)
+    revalidatePath(`/import/history/${batchId}/review`)
+    revalidatePath(`/transactions/${transaction.id}`)
+
+    return {
+      success: true,
+      data: { matchId },
+    }
+  } catch (error) {
+    console.error("Error approving match:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to approve match",
+    }
+  }
+}
+
+/**
+ * Reject a flagged match (don't merge)
+ */
+export async function rejectMatchAction(
+  _prevState: ActionState | null,
+  formData: FormData
+): Promise<ActionState<{ matchId: string }>> {
+  try {
+    const user = await getCurrentUser()
+    const matchId = formData.get("matchId") as string
+    const batchId = formData.get("batchId") as string
+
+    if (!matchId || !batchId) {
+      return { success: false, error: "Missing match ID or batch ID" }
+    }
+
+    // Get the match details
+    const match = await getTransactionMatchById(matchId)
+    if (!match) {
+      return { success: false, error: "Match not found" }
+    }
+
+    // Mark the match as rejected
+    await rejectMatch(matchId, user.id)
+
+    // Revalidate paths
+    revalidatePath(`/import/history/${batchId}`)
+    revalidatePath(`/import/history/${batchId}/review`)
+
+    return {
+      success: true,
+      data: { matchId },
+    }
+  } catch (error) {
+    console.error("Error rejecting match:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to reject match",
+    }
+  }
+}
+
+/**
+ * Approve all flagged matches in a batch
+ */
+export async function approveAllMatchesAction(
+  _prevState: ActionState | null,
+  formData: FormData
+): Promise<ActionState<{ count: number }>> {
+  try {
+    const user = await getCurrentUser()
+    const batchId = formData.get("batchId") as string
+    const matchIds = JSON.parse(formData.get("matchIds") as string) as string[]
+
+    if (!batchId || !matchIds || matchIds.length === 0) {
+      return { success: false, error: "Missing batch ID or match IDs" }
+    }
+
+    let approvedCount = 0
+
+    for (const matchId of matchIds) {
+      const match = await getTransactionMatchById(matchId)
+      if (!match) continue
+
+      const transaction = await getTransactionById(match.transactionId, user.id)
+      if (!transaction) continue
+
+      const csvData = match.csvData as Record<string, unknown>
+      const { mergedFields } = await mergeTransaction(transaction, csvData, match.confidence)
+
+      await approveMatch(matchId, user.id, mergedFields)
+      approvedCount++
+    }
+
+    // Revalidate paths
+    revalidatePath(`/import/history/${batchId}`)
+    revalidatePath(`/import/history/${batchId}/review`)
+
+    return {
+      success: true,
+      data: { count: approvedCount },
+    }
+  } catch (error) {
+    console.error("Error approving all matches:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to approve all matches",
+    }
+  }
+}
+
+/**
+ * Reject all flagged matches in a batch
+ */
+export async function rejectAllMatchesAction(
+  _prevState: ActionState | null,
+  formData: FormData
+): Promise<ActionState<{ count: number }>> {
+  try {
+    const user = await getCurrentUser()
+    const batchId = formData.get("batchId") as string
+    const matchIds = JSON.parse(formData.get("matchIds") as string) as string[]
+
+    if (!batchId || !matchIds || matchIds.length === 0) {
+      return { success: false, error: "Missing batch ID or match IDs" }
+    }
+
+    let rejectedCount = 0
+
+    for (const matchId of matchIds) {
+      await rejectMatch(matchId, user.id)
+      rejectedCount++
+    }
+
+    // Revalidate paths
+    revalidatePath(`/import/history/${batchId}`)
+    revalidatePath(`/import/history/${batchId}/review`)
+
+    return {
+      success: true,
+      data: { count: rejectedCount },
+    }
+  } catch (error) {
+    console.error("Error rejecting all matches:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to reject all matches",
+    }
+  }
+}
