@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-echo "🚀 Starting TaxHacker..."
+echo "🚀 Starting Expensing..."
 
 # Wait for database to be ready
 echo "⏳ Waiting for database..."
@@ -16,7 +16,7 @@ echo "✅ Database is ready!"
 echo "📦 Running database migrations..."
 npx prisma migrate deploy || true
 
-echo "🎉 TaxHacker is ready!"
+echo "🎉 Expensing is ready!"
 
 # Start the application
 exec "$@"
