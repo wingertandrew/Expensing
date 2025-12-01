@@ -1,6 +1,6 @@
 services:
   app:
-    image: ghcr.io/vas3k/taxhacker:latest
+    image: ghcr.io/wingertandrew/expensing:latest
     container_name: taxhacker_app
     networks:
       - taxhacker_network

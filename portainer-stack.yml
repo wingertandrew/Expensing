@@ -28,7 +28,7 @@ services:
         max-file: "3"
 
   app:
-    image: ghcr.io/vas3k/taxhacker:latest  # Replace with your image
+    image: ghcr.io/wingertandrew/expensing:latest
     container_name: taxhacker-app
     restart: unless-stopped
     depends_on:
