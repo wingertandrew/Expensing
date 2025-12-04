@@ -7,16 +7,17 @@ import {
 } from "@/app/(app)/import/csv/actions"
 import { FormError } from "@/components/forms/error"
 import { Button } from "@/components/ui/button"
-import { Field } from "@/prisma/client"
+import { Field, Project } from "@/prisma/client"
 import { Loader2, Play, Upload, CheckCircle2, AlertCircle, PlusCircle, Flag } from "lucide-react"
 import { useRouter } from "next/navigation"
-import { startTransition, useActionState, useEffect, useState } from "react"
+import { startTransition, useActionState, useEffect, useMemo, useState } from "react"
 import { generateUUID } from "@/lib/utils"
 import { CSVFormat, getFormatInfo } from "@/lib/csv/format-detector"
+import { ProjectMappingChoice, ProjectMappingsInput } from "@/types/import"
 
 const MAX_PREVIEW_ROWS = 100
 
-export function ImportCSVTable({ fields }: { fields: Field[] }) {
+export function ImportCSVTable({ fields, projects }: { fields: Field[]; projects: Project[] }) {
   const router = useRouter()
   const [parseState, parseAction, isParsing] = useActionState(parseCSVAction, null)
   const [saveState, saveAction, isSaving] = useActionState(saveTransactionsAction, null)
@@ -39,6 +40,13 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
     flagged: number
     errors: number
   } | null>(null)
+  const [poNumbers, setPoNumbers] = useState<string[]>([])
+  const [poMappings, setPoMappings] = useState<ProjectMappingsInput>({})
+
+  const headerRow = useMemo(
+    () => (csvData[0] ?? []).map((header) => header.replace(/^\uFEFF/, "")),
+    [csvData]
+  )
 
   useEffect(() => {
     if (parseState?.success && parseState.data) {
@@ -47,23 +55,64 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
       setCSVFormat(format)
 
       if (rows.length > 0) {
-        if (format === 'amazon') {
-          // Amazon: No user mapping needed (auto-detected columns)
+        if (format === 'amazon' || format === 'amex' || format === 'chase') {
           setColumnMappings([])
         } else {
-          // Generic/AmEx: Auto-detect column mappings
           setColumnMappings(
             rows[0].map((value) => {
-              const field = fields.find((field) => field.code === value || field.name === value)
+              const trimmedValue = value.replace(/^\uFEFF/, "")
+              const field = fields.find((field) => field.code === trimmedValue || field.name === trimmedValue)
               return field?.code || ""
             })
           )
         }
+
+        if (format === 'amazon') {
+          const headerIndex = rows[0].findIndex((header) => header.replace(/^\uFEFF/, "").trim().toLowerCase() === "po number")
+          if (headerIndex >= 0) {
+            const values = Array.from(
+              new Set(
+                rows
+                  .slice(1)
+                  .map((row) => (row[headerIndex] || "").toString().trim())
+                  .filter((value) => value.length > 0)
+              )
+            )
+            setPoNumbers(values)
+            setPoMappings((prev) => {
+              const next: ProjectMappingsInput = {}
+              values.forEach((po) => {
+                const existing = prev[po]
+                if (existing) {
+                  next[po] = existing
+                  return
+                }
+                const matched = projects.find(
+                  (project) => project.code === po || project.name?.toLowerCase() === po.toLowerCase()
+                )
+                if (matched) {
+                  next[po] = { mode: "existing", code: matched.code }
+                } else {
+                  next[po] = { mode: "new", name: po }
+                }
+              })
+              return next
+            })
+          } else {
+            setPoNumbers([])
+            setPoMappings({})
+          }
+        } else {
+          setPoNumbers([])
+          setPoMappings({})
+        }
       } else {
         setColumnMappings([])
+        setPoNumbers([])
+        setPoMappings({})
       }
     }
-  }, [parseState, fields])
+  }, [parseState, fields, projects])
 
   useEffect(() => {
     if (saveState?.success) {
@@ -100,31 +149,48 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
   }
 
   const handleSave = async () => {
+    console.log('[Import] handleSave called', {
+      csvDataLength: csvData.length,
+      format: csvFormat,
+      matchingEnabled: csvSettings.enableMatching
+    })
+
     if (csvData.length === 0) return
 
     // Skip validation for Amazon format (no mapping needed)
-    if (csvFormat !== 'amazon' && !isAtLeastOneFieldMapped(columnMappings)) {
+    if (csvFormat === 'generic' && !isAtLeastOneFieldMapped(columnMappings)) {
       alert("Please map at least one column to a field")
       return
     }
 
     const formData = new FormData()
 
-    if (csvFormat === 'amazon') {
-      // Amazon: Send raw rows (already in correct format, skip header)
+    const buildRowObjects = () => {
       const startIndex = csvSettings.skipHeader ? 1 : 0
-      const amazonRows = csvData.slice(startIndex).map((row) => {
-        const amazonRow: Record<string, unknown> = {}
-        // Create object with column headers as keys
-        csvData[0].forEach((header, index) => {
-          amazonRow[header] = row[index] || ''
+      return csvData.slice(startIndex).map((row) => {
+        const obj: Record<string, unknown> = {}
+        headerRow.forEach((header, index) => {
+          if (!header) return
+          obj[header] = row[index] || ""
         })
-        return amazonRow
+        return obj
       })
+    }
 
-      formData.append("rows", JSON.stringify(amazonRows))
+    if (csvFormat === 'amazon' || csvFormat === 'amex' || csvFormat === 'chase') {
+      const structuredRows = buildRowObjects()
+      console.log('[Import] Built structured rows:', {
+        count: structuredRows.length,
+        format: csvFormat,
+        firstRowKeys: structuredRows[0] ? Object.keys(structuredRows[0]).slice(0, 10) : []
+      })
+      formData.append("rows", JSON.stringify(structuredRows))
+      if (csvFormat === 'amazon' && poNumbers.length > 0) {
+        console.log('[Import] Adding project mappings:', poMappings)
+        formData.append("projectMappings", JSON.stringify(poMappings))
+      }
     } else {
-      // Generic/AmEx: Map columns to fields (existing logic)
+      // Generic: Map columns to fields (existing logic)
       const startIndex = csvSettings.skipHeader ? 1 : 0
       const processedRows = csvData.slice(startIndex).map((row) => {
         const processedRow: Record<string, unknown> = {}
@@ -146,13 +212,23 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
     if (csvSettings.enableMatching) {
       const progressId = generateUUID()
       formData.append("filename", uploadedFilename || "upload.csv")
-      formData.append("columnMappings", JSON.stringify(Object.fromEntries(
-        columnMappings.map((code, idx) => [idx, code]).filter(([_, code]) => code)
-      )))
+      if (csvFormat === 'generic') {
+        formData.append(
+          "columnMappings",
+          JSON.stringify(
+            Object.fromEntries(columnMappings.map((code, idx) => [idx, code]).filter(([_, code]) => code))
+          )
+        )
+      } else {
+        formData.append("columnMappings", JSON.stringify({}))
+      }
       formData.append("progressId", progressId)
 
+      console.log('[Import] Calling saveMatchingAction...')
       startTransition(async () => {
+        console.log('[Import] Inside startTransition, calling action now...')
         await saveMatchingAction(formData)
+        console.log('[Import] Action completed')
       })
     } else {
       // Use simple import without matching
@@ -286,14 +362,73 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
             <FormError>{saveMatchingState?.error || saveState?.error}</FormError>
           )}
 
-          {/* Column mapping table (hidden for Amazon format) */}
-          {csvFormat !== 'amazon' && (
+          {csvFormat === 'amazon' && poNumbers.length > 0 && (
+            <div className="rounded-md border p-4 mb-4">
+              <h3 className="font-semibold mb-2">PO Number to Project Mapping</h3>
+              <p className="text-sm text-muted-foreground mb-4">
+                Assign each PO Number to an existing project or create a new one. Transactions from that PO will use the selected project.
+              </p>
+              <div className="space-y-4">
+                {poNumbers.map((po) => {
+                  const mapping = poMappings[po] || { mode: "new", name: po }
+                  const selectValue = mapping.mode === "existing" ? mapping.code : "__new__"
+                  return (
+                    <div key={po} className="flex flex-col gap-2 border rounded-md p-3">
+                      <div className="text-sm font-medium">PO Number: {po}</div>
+                      <div className="flex flex-col gap-2 md:flex-row md:items-center">
+                        <select
+                          className="w-full md:w-1/3 p-2 border rounded-md"
+                          value={selectValue}
+                          onChange={(e) => {
+                            const value = e.target.value
+                            setPoMappings((prev) => {
+                              const next = { ...prev }
+                              if (value === "__new__") {
+                                next[po] = { mode: "new", name: mapping.mode === "new" ? mapping.name : po }
+                              } else {
+                                next[po] = { mode: "existing", code: value }
+                              }
+                              return next as ProjectMappingsInput
+                            })
+                          }}
+                        >
+                          <option value="__new__">Create new project "{mapping.mode === "new" ? mapping.name : po}"</option>
+                          {projects.map((project) => (
+                            <option key={project.code} value={project.code}>
+                              {project.name}
+                            </option>
+                          ))}
+                        </select>
+                        {mapping.mode === "new" && (
+                          <input
+                            className="w-full md:flex-1 p-2 border rounded-md"
+                            value={mapping.name}
+                            onChange={(e) => {
+                              const value = e.target.value
+                              setPoMappings((prev) => ({
+                                ...prev,
+                                [po]: { mode: "new", name: value || po },
+                              }))
+                            }}
+                            placeholder="New project name"
+                          />
+                        )}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </div>
+          )}
+
+          {/* Column mapping table (Generic format only) */}
+          {csvFormat === 'generic' && (
           <div className="rounded-md border">
             <div className="relative w-full overflow-auto">
               <table className="w-full caption-bottom text-sm">
                 <thead className="[&_tr]:border-b">
                   <tr className="border-b transition-colors hover:bg-muted/50">
-                    {csvData[0].map((_, index) => (
+                    {headerRow.map((_, index) => (
                       <th key={index} className="h-12 min-w-[200px] px-4 text-left align-middle font-medium">
                         <select
                           className="w-full p-2 border rounded-md"
@@ -319,7 +454,7 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
                         rowIndex === 0 && csvSettings.skipHeader ? "line-through text-muted-foreground" : ""
                       }`}
                     >
-                      {csvData[0].map((_, colIndex) => (
+                      {headerRow.map((_, colIndex) => (
                         <td key={colIndex} className="p-4 align-middle">
                           {(row[colIndex] || "").toString().slice(0, 256)}
                         </td>
@@ -330,6 +465,41 @@ export function ImportCSVTable({ fields }: { fields: Field[] }) {
               </table>
             </div>
           </div>
+          )}
+
+          {/* Read-only preview for auto-detected formats */}
+          {csvFormat !== 'generic' && (
+            <div className="rounded-md border mt-6">
+              <div className="relative w-full overflow-auto">
+                <table className="w-full caption-bottom text-sm">
+                  <thead className="[&_tr]:border-b bg-muted/50">
+                    <tr className="border-b">
+                      {headerRow.map((header, index) => (
+                        <th key={index} className="h-12 min-w-[180px] px-4 text-left font-medium">
+                          {header || `Column ${index + 1}`}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody className="[&_tr:last-child]:border-0">
+                    {csvData.slice(0, MAX_PREVIEW_ROWS).map((row, rowIndex) => (
+                      <tr
+                        key={rowIndex}
+                        className={`border-b transition-colors hover:bg-muted/30 ${
+                          rowIndex === 0 && csvSettings.skipHeader ? "line-through text-muted-foreground" : ""
+                        }`}
+                      >
+                        {headerRow.map((_, colIndex) => (
+                          <td key={colIndex} className="p-4 align-middle">
+                            {(row[colIndex] || "").toString().slice(0, 256)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
           )}
 
           {csvData.length > MAX_PREVIEW_ROWS && (

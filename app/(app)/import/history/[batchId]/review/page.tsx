@@ -7,6 +7,8 @@ import { ArrowLeft } from "lucide-react"
 import { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
+import { SourceBadge } from "@/components/import/source-badge"
+import { CSVFormat } from "@/lib/csv/format-detector"
 
 export const metadata: Metadata = {
   title: "Review Flagged Matches",
@@ -27,6 +29,7 @@ export default async function ReviewMatchesPage({
   }
 
   const flaggedMatches = await getFlaggedMatches(batchId)
+  const format = (batch.metadata as any)?.format as CSVFormat | undefined
 
   return (
     <>
@@ -38,7 +41,10 @@ export default async function ReviewMatchesPage({
               Back to Batch Details
             </Button>
           </Link>
-          <h2 className="text-3xl font-bold tracking-tight">Review Flagged Matches</h2>
+          <div className="flex items-center gap-3">
+            {format && <SourceBadge format={format} size="lg" showLabel={true} />}
+            <h2 className="text-3xl font-bold tracking-tight">Review Flagged Matches</h2>
+          </div>
           <p className="text-sm text-muted-foreground">
             {flaggedMatches.length} match{flaggedMatches.length !== 1 ? "es" : ""} need{flaggedMatches.length === 1 ? "s" : ""} your review
           </p>
@@ -47,7 +53,7 @@ export default async function ReviewMatchesPage({
 
       <main>
         {flaggedMatches.length > 0 ? (
-          <MatchReviewList matches={flaggedMatches} batchId={batchId} />
+          <MatchReviewList matches={flaggedMatches} batchId={batchId} format={format} />
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[400px]">
             <p className="text-muted-foreground">No flagged matches to review. All matches have been processed!</p>

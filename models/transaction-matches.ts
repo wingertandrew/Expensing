@@ -2,6 +2,45 @@ import { prisma } from "@/lib/db"
 import { TransactionMatch, Prisma } from "@/prisma/client"
 import { cache } from "react"
 
+const transactionInclude = {
+  category: true,
+  project: true,
+} as const
+
+const matchWithTransactionInclude = {
+  transaction: {
+    include: {
+      ...transactionInclude,
+      matches: {
+        include: {
+          batch: {
+            select: {
+              metadata: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'asc' as const,
+        },
+        take: 1,
+      },
+    },
+  },
+} as const
+
+const matchWithTransactionAndBatchInclude = {
+  ...matchWithTransactionInclude,
+  batch: true,
+} as const
+
+export type TransactionMatchWithTransaction = Prisma.TransactionMatchGetPayload<{
+  include: typeof matchWithTransactionInclude
+}>
+
+type TransactionMatchWithTransactionAndBatch = Prisma.TransactionMatchGetPayload<{
+  include: typeof matchWithTransactionAndBatchInclude
+}>
+
 export type TransactionMatchData = {
   batchId: string
   transactionId: string
@@ -45,18 +84,10 @@ export const createTransactionMatch = async (
  * Get a transaction match by ID
  */
 export const getTransactionMatchById = cache(
-  async (id: string): Promise<TransactionMatch | null> => {
+  async (id: string): Promise<TransactionMatchWithTransactionAndBatch | null> => {
     return await prisma.transactionMatch.findUnique({
       where: { id },
-      include: {
-        transaction: {
-          include: {
-            category: true,
-            project: true,
-          },
-        },
-        batch: true,
-      },
+      include: matchWithTransactionAndBatchInclude,
     })
   }
 )
@@ -65,20 +96,13 @@ export const getTransactionMatchById = cache(
  * Get all transaction matches for a batch
  */
 export const getTransactionMatchesByBatch = cache(
-  async (batchId: string, status?: string): Promise<TransactionMatch[]> => {
+  async (batchId: string, status?: string): Promise<TransactionMatchWithTransaction[]> => {
     return await prisma.transactionMatch.findMany({
       where: {
         batchId,
         ...(status && { status }),
       },
-      include: {
-        transaction: {
-          include: {
-            category: true,
-            project: true,
-          },
-        },
-      },
+      include: matchWithTransactionInclude,
       orderBy: { confidence: "desc" },
     })
   }
@@ -87,20 +111,13 @@ export const getTransactionMatchesByBatch = cache(
 /**
  * Get flagged matches for a batch (requires manual review)
  */
-export const getFlaggedMatches = cache(async (batchId: string): Promise<TransactionMatch[]> => {
+export const getFlaggedMatches = cache(async (batchId: string): Promise<TransactionMatchWithTransaction[]> => {
   return await prisma.transactionMatch.findMany({
     where: {
       batchId,
       status: "flagged",
     },
-    include: {
-      transaction: {
-        include: {
-          category: true,
-          project: true,
-        },
-      },
-    },
+    include: matchWithTransactionInclude,
     orderBy: { confidence: "desc" },
   })
 })
@@ -108,23 +125,18 @@ export const getFlaggedMatches = cache(async (batchId: string): Promise<Transact
 /**
  * Get auto-merged matches for a batch
  */
-export const getAutoMergedMatches = cache(async (batchId: string): Promise<TransactionMatch[]> => {
-  return await prisma.transactionMatch.findMany({
-    where: {
-      batchId,
-      status: "auto_merged",
-    },
-    include: {
-      transaction: {
-        include: {
-          category: true,
-          project: true,
-        },
+export const getAutoMergedMatches = cache(
+  async (batchId: string): Promise<TransactionMatchWithTransaction[]> => {
+    return await prisma.transactionMatch.findMany({
+      where: {
+        batchId,
+        status: "auto_merged",
       },
-    },
-    orderBy: { createdAt: "desc" },
-  })
-})
+      include: matchWithTransactionInclude,
+      orderBy: { createdAt: "desc" },
+    })
+  }
+)
 
 /**
  * Get all matches for a specific transaction

@@ -9,8 +9,8 @@ export type MatchCandidate = {
 }
 
 export type CSVTransactionData = {
-  total: number // in cents
-  issuedAt: Date
+  total?: number | null // in cents
+  issuedAt?: Date | null
   importReference?: string | null
 }
 
@@ -54,6 +54,11 @@ export async function findPotentialMatches(
     }
   }
 
+  // If we don't have the required fields for amount/date matching, stop here
+  if (csvData.total == null || !csvData.issuedAt) {
+    return []
+  }
+
   // Strategy 2: Find candidates by exact amount + date range (±3 days)
   const dateFrom = subDays(csvData.issuedAt, 3)
   const dateTo = addDays(csvData.issuedAt, 3)
@@ -79,11 +84,12 @@ export async function findPotentialMatches(
   }
 
   // Calculate confidence for each candidate
+  const { total, issuedAt } = csvData
   const matches: MatchCandidate[] = candidates
     .map((transaction) => {
       const confidence = calculateMatchConfidence(
-        csvData.total,
-        csvData.issuedAt,
+        total,
+        issuedAt,
         transaction.total!,
         transaction.issuedAt!
       )

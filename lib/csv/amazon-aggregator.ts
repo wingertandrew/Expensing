@@ -20,9 +20,10 @@ export type AmazonRawRow = {
   'Order ID': string
   'Payment Date': string
   'Payment Amount': string
-  'Charge Identifier': string
+  'Payment Reference ID': string // Amazon's field name for charge identifier
   'Payment Instrument Type': string
   'Invoice Number': string
+  'PO Number': string
   'Purchase Order Number': string
   'ASIN': string
   'Title': string
@@ -65,7 +66,7 @@ export type AmazonOrderItem = {
  */
 export type AmazonAggregatedOrder = {
   orderId: string
-  chargeIdentifier: string
+  paymentReferenceId: string // Amazon's Payment Reference ID (used as unique identifier)
   orderDate: Date
   paymentDate: Date
   paymentAmount: number // in cents - this is what matches credit card statement
@@ -116,10 +117,58 @@ function cleanExcelFormula(value: string): string {
 function parseCurrency(value: string): number {
   if (!value) return 0
 
-  const cleaned = cleanExcelFormula(value)
-  const num = parseFloat(cleaned)
+  let normalized = cleanExcelFormula(value).trim()
+  if (!normalized) return 0
 
-  return isNaN(num) ? 0 : Math.round(num * 100)
+  // Treat parentheses and explicit minus signs as negatives
+  let sign = 1
+  if (/^\(.*\)$/.test(normalized)) {
+    sign = -1
+    normalized = normalized.slice(1, -1)
+  }
+
+  if (normalized.includes("-")) {
+    sign *= -1
+    normalized = normalized.replace(/-/g, "")
+  }
+
+  // Remove currency symbols/letters but keep digits and separators
+  normalized = normalized.replace(/[^\d.,]/g, "")
+  if (!normalized) return 0
+
+  const lastComma = normalized.lastIndexOf(",")
+  const lastDot = normalized.lastIndexOf(".")
+
+  let decimalSeparator: "," | "." | null = null
+
+  if (lastComma !== -1 && lastDot !== -1) {
+    decimalSeparator = lastComma > lastDot ? "," : "."
+  } else if (lastComma !== -1) {
+    const digitsAfterComma = normalized.length - lastComma - 1
+    if (digitsAfterComma > 0 && digitsAfterComma <= 2) {
+      decimalSeparator = ","
+    }
+  } else if (lastDot !== -1) {
+    const digitsAfterDot = normalized.length - lastDot - 1
+    if (digitsAfterDot > 0 && digitsAfterDot <= 2) {
+      decimalSeparator = "."
+    }
+  }
+
+  if (decimalSeparator === ",") {
+    normalized = normalized.replace(/\./g, "")
+    normalized = normalized.replace(/,/g, ".")
+  } else if (decimalSeparator === ".") {
+    normalized = normalized.replace(/,/g, "")
+  } else {
+    normalized = normalized.replace(/[.,]/g, "")
+  }
+
+  if (!normalized) return 0
+
+  const num = parseFloat(normalized)
+
+  return isNaN(num) ? 0 : Math.round(num * 100) * sign
 }
 
 /**
@@ -157,17 +206,17 @@ function parseInteger(value: string, defaultValue: number = 0): number {
 }
 
 /**
- * Aggregate Amazon CSV rows by Order ID + Charge Identifier
+ * Aggregate Amazon CSV rows by Order ID + Payment Reference ID
  *
  * Amazon CSVs have one row per item. Orders with multiple items will have
- * multiple rows with the same Order ID and Charge Identifier. This function
+ * multiple rows with the same Order ID and Payment Reference ID. This function
  * groups those rows together and creates a single aggregated order with
  * an items array.
  *
  * Key design decisions:
  * - Uses Payment Amount (not sum of items) for the transaction total
  * - Uses Payment Date (not Order Date) for matching against credit card statements
- * - Groups by Order ID + Charge Identifier composite key (handles split shipments)
+ * - Groups by Order ID + Payment Reference ID composite key (handles split shipments)
  * - Preserves all item-level detail in items array
  * - Extracts business metadata from first row (GL Code, Department, etc.)
  *
@@ -177,17 +226,23 @@ function parseInteger(value: string, defaultValue: number = 0): number {
 export function aggregateAmazonRows(
   rows: AmazonRawRow[]
 ): AmazonAggregatedOrder[] {
-  // Group rows by Order ID + Charge Identifier composite key
+  // Group rows by Order ID + Payment Reference ID composite key
   const orderMap = new Map<string, AmazonRawRow[]>()
+
+  console.log(`[Amazon Aggregator] Processing ${rows.length} raw rows`)
 
   for (const row of rows) {
     // Skip rows with missing critical fields
-    if (!row['Order ID'] || !row['Charge Identifier']) {
-      console.warn('Skipping row with missing Order ID or Charge Identifier:', row)
+    if (!row['Order ID'] || !row['Payment Reference ID']) {
+      console.warn('Skipping row with missing Order ID or Payment Reference ID:', {
+        orderId: row['Order ID'],
+        paymentRefId: row['Payment Reference ID'],
+        availableKeys: Object.keys(row).slice(0, 10)
+      })
       continue
     }
 
-    const key = `${row['Order ID']}:${row['Charge Identifier']}`
+    const key = `${row['Order ID']}:${row['Payment Reference ID']}`
 
     if (!orderMap.has(key)) {
       orderMap.set(key, [])
@@ -207,13 +262,14 @@ export function aggregateAmazonRows(
 
     const order: AmazonAggregatedOrder = {
       orderId: firstRow['Order ID'],
-      chargeIdentifier: firstRow['Charge Identifier'],
+      paymentReferenceId: firstRow['Payment Reference ID'],
       orderDate: parseAmazonDate(firstRow['Order Date']),
       paymentDate: parseAmazonDate(firstRow['Payment Date']),
       paymentAmount: parseCurrency(firstRow['Payment Amount']), // Critical: order total, not item sum
       paymentInstrumentType: firstRow['Payment Instrument Type'] || 'Unknown',
-      invoiceNumber: firstRow['Invoice Number'] || undefined,
-      purchaseOrderNumber: firstRow['Purchase Order Number'] || undefined,
+      invoiceNumber: firstRow['Invoice Number']?.trim() || undefined,
+      purchaseOrderNumber:
+        firstRow['PO Number']?.trim() || firstRow['Purchase Order Number']?.trim() || undefined,
       items: [],
       metadata: {
         glCode: firstRow['GL Code'] || undefined,
@@ -255,6 +311,16 @@ export function aggregateAmazonRows(
     } else {
       console.warn('Skipping order with no valid items:', key)
     }
+  }
+
+  console.log(`[Amazon Aggregator] Result: ${orders.length} aggregated orders from ${rows.length} rows`)
+  if (orders.length > 0) {
+    console.log('[Amazon Aggregator] First order sample:', {
+      orderId: orders[0].orderId,
+      paymentReferenceId: orders[0].paymentReferenceId,
+      paymentAmount: orders[0].paymentAmount,
+      itemCount: orders[0].items.length
+    })
   }
 
   return orders

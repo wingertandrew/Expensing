@@ -41,6 +41,7 @@ model User {
   appData             AppData[]
   progress            Progress[]
   importBatches       ImportBatch[]
+  transactionAuditLogs TransactionAuditLog[]
 
   @@map("users")
 }
@@ -195,6 +196,7 @@ model Transaction {
   importReference       String?            @map("import_reference")
   lastMatchedAt         DateTime?          @map("last_matched_at")
   matches               TransactionMatch[]
+  auditLogs             TransactionAuditLog[]
 
   @@index([userId])
   @@index([projectCode])
@@ -305,4 +307,24 @@ model TransactionMatch {
   @@index([confidence])
   @@index([status])
   @@map("transaction_matches")
+}
+
+model TransactionAuditLog {
+  id            String      @id @default(uuid()) @db.Uuid
+  transactionId String      @map("transaction_id") @db.Uuid
+  transaction   Transaction @relation(fields: [transactionId], references: [id], onDelete: Cascade)
+  userId        String      @map("user_id") @db.Uuid
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  action        String      // "created", "manual_edit", "csv_merge", "match_reviewed"
+  fieldName     String?     @map("field_name")
+  oldValue      Json?       @map("old_value")
+  newValue      Json?       @map("new_value")
+  metadata      Json?       // Additional context (matchId, batchFilename)
+  createdAt     DateTime    @default(now()) @map("created_at")
+
+  @@index([transactionId])
+  @@index([userId])
+  @@index([createdAt])
+  @@index([action])
+  @@map("transaction_audit_logs")
 }

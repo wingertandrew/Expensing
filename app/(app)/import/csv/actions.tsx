@@ -18,6 +18,11 @@ import { updateProgress, getOrCreateProgress } from "@/models/progress"
 import { detectCSVFormat, CSVFormat } from "@/lib/csv/format-detector"
 import { aggregateAmazonRows, AmazonRawRow, getAggregationStats } from "@/lib/csv/amazon-aggregator"
 import { mapAmazonOrderToTransaction } from "@/lib/csv/amazon-mapper"
+import { mapAmexRowToTransaction } from "@/lib/csv/amex-parser"
+import { mapChaseRowToTransaction } from "@/lib/csv/chase-parser"
+import { ProjectMappingsInput } from "@/types/import"
+import { importProject } from "@/models/export_and_import"
+import { logTransactionCreation } from "@/lib/audit-logger"
 
 export async function parseCSVAction(
   _prevState: ActionState<{ rows: string[][], format: CSVFormat }> | null,
@@ -66,19 +71,14 @@ export async function saveTransactionsAction(
   const user = await getCurrentUser()
   try {
     const rows = JSON.parse(formData.get("rows") as string) as Record<string, unknown>[]
+    const format = (formData.get("format") as CSVFormat) || "generic"
+    const projectMappings = formData.get("projectMappings")
+      ? (JSON.parse(formData.get("projectMappings") as string) as ProjectMappingsInput)
+      : undefined
+    const processed = await prepareTransactions(user.id, rows, format, projectMappings)
 
-    for (const row of rows) {
-      const transactionData: Record<string, unknown> = {}
-      for (const [fieldCode, value] of Object.entries(row)) {
-        const fieldDef = EXPORT_AND_IMPORT_FIELD_MAP[fieldCode]
-        if (fieldDef?.import) {
-          transactionData[fieldCode] = await fieldDef.import(user.id, value as string)
-        } else {
-          transactionData[fieldCode] = value as string
-        }
-      }
-
-      await createTransaction(user.id, transactionData)
+    for (const { data } of processed) {
+      await createTransaction(user.id, data)
     }
 
     revalidatePath("/import/csv")
@@ -114,46 +114,15 @@ export async function saveTransactionsWithMatchingAction(
     >
     const progressId = formData.get("progressId") as string
     const format = (formData.get("format") as CSVFormat) || 'generic'
+    const projectMappings = formData.get("projectMappings")
+      ? (JSON.parse(formData.get("projectMappings") as string) as ProjectMappingsInput)
+      : undefined
 
     console.log(`Processing ${rows.length} rows in ${format} format`)
 
     // Process rows based on format
-    let processedTransactions: Array<{ data: Partial<TransactionData>, originalRow: Record<string, unknown> }>
     const originalRowCount = rows.length
-
-    if (format === 'amazon') {
-      // Amazon: Aggregate rows by Order ID, then map to transactions
-      console.log('Amazon format detected - aggregating items by order...')
-
-      // Convert raw rows to AmazonRawRow format (header mapping)
-      const amazonRows: AmazonRawRow[] = rows.map(row => {
-        const amazonRow: Record<string, string> = {}
-        for (const [key, value] of Object.entries(row)) {
-          amazonRow[key] = String(value || '')
-        }
-        return amazonRow as unknown as AmazonRawRow
-      })
-
-      // Aggregate rows into orders
-      const aggregatedOrders = aggregateAmazonRows(amazonRows)
-      const stats = getAggregationStats(amazonRows, aggregatedOrders)
-
-      console.log(`Amazon aggregation: ${stats.totalRows} rows → ${stats.totalOrders} orders (${stats.reductionPercent}% reduction, avg ${stats.avgItemsPerOrder} items/order)`)
-
-      // Map to transaction data
-      processedTransactions = aggregatedOrders.map(order => ({
-        data: mapAmazonOrderToTransaction(order),
-        originalRow: { orderId: order.orderId, chargeIdentifier: order.chargeIdentifier }
-      }))
-    } else {
-      // AmEx/Generic: Process row-by-row (existing logic)
-      processedTransactions = await Promise.all(
-        rows.map(async (row) => ({
-          data: await parseCSVRowToTransaction(user.id, row),
-          originalRow: row
-        }))
-      )
-    }
+    const processedTransactions = await prepareTransactions(user.id, rows, format, projectMappings)
 
     console.log(`Prepared ${processedTransactions.length} transactions for import`)
 
@@ -179,6 +148,10 @@ export async function saveTransactionsWithMatchingAction(
 
     // Process each transaction
     const CHUNK_SIZE = 100
+    let matchedAccumulator = 0
+    let createdAccumulator = 0
+    let skippedAccumulator = 0
+    let errorAccumulator = 0
     for (let i = 0; i < processedTransactions.length; i += CHUNK_SIZE) {
       const chunk = processedTransactions.slice(i, i + CHUNK_SIZE)
 
@@ -194,19 +167,35 @@ export async function saveTransactionsWithMatchingAction(
             parsedData: parsedData as Record<string, unknown>,
           })
 
-          // Skip matching if disabled or no amount/date
-          if (!matchingEnabled || !parsedData.total || !parsedData.issuedAt) {
+          const hasReference = typeof parsedData.importReference === "string" && parsedData.importReference.length > 0
+          const hasAmountAndDate = Boolean(parsedData.total && parsedData.issuedAt)
+
+          // Skip matching if disabled or missing necessary matching data
+          if (!matchingEnabled || (!hasReference && !hasAmountAndDate)) {
             const transaction = await createTransaction(user.id, parsedData)
+            await logTransactionCreation(transaction.id, user.id, {
+              source: "csv_import",
+              batchId: batch.id,
+              batchFilename: batch.filename,
+              format: format || undefined,
+            })
             await markRowProcessed(importRow.id, transaction.id, "created")
             await incrementBatchCount(batch.id, user.id, "createdCount")
+            createdAccumulator += 1
             continue
           }
 
           // Find potential matches
           const bestMatch = await findBestMatch(user.id, {
-            total: parsedData.total as number,
-            issuedAt: parsedData.issuedAt as Date,
-            importReference: parsedData.importReference as string | undefined,
+            total: typeof parsedData.total === "number" ? (parsedData.total as number) : undefined,
+            issuedAt:
+              parsedData.issuedAt instanceof Date
+                ? (parsedData.issuedAt as Date)
+                : parsedData.issuedAt
+                  ? new Date(parsedData.issuedAt as Date | string)
+                  : undefined,
+            importReference:
+              typeof parsedData.importReference === "string" ? parsedData.importReference : undefined,
           })
 
           if (bestMatch) {
@@ -219,13 +208,19 @@ export async function saveTransactionsWithMatchingAction(
             if (alreadyMatched) {
               await markRowSkipped(importRow.id, "Already matched in this batch")
               await incrementBatchCount(batch.id, user.id, "skippedCount")
+              skippedAccumulator += 1
               continue
             }
 
             // Calculate days difference for audit
-            const daysDiff = Math.abs(
-              differenceInDays(parsedData.issuedAt as Date, bestMatch.transaction.issuedAt!)
-            )
+            const matchedDate =
+              (parsedData.issuedAt instanceof Date
+                ? parsedData.issuedAt
+                : parsedData.issuedAt
+                  ? new Date(parsedData.issuedAt as Date | string)
+                  : null) ?? bestMatch.transaction.issuedAt ?? new Date()
+            const existingDate = bestMatch.transaction.issuedAt ?? matchedDate
+            const daysDiff = Math.abs(differenceInDays(matchedDate, existingDate))
 
             // Check if should auto-merge
             if (shouldAutoMerge(bestMatch.confidence) && bestMatch.confidence >= autoMergeThreshold) {
@@ -234,8 +229,7 @@ export async function saveTransactionsWithMatchingAction(
                 validateMergeCompatibility(bestMatch.transaction, parsedData)
                 const { transaction, mergedFields } = await mergeTransaction(
                   bestMatch.transaction,
-                  parsedData,
-                  bestMatch.confidence
+                  parsedData
                 )
 
                 // Record the match
@@ -243,9 +237,10 @@ export async function saveTransactionsWithMatchingAction(
                   batchId: batch.id,
                   transactionId: transaction.id,
                   confidence: bestMatch.confidence,
-                  matchedAmount: parsedData.total as number,
-                  matchedDate: parsedData.issuedAt as Date,
-                  existingDate: bestMatch.transaction.issuedAt!,
+                  matchedAmount:
+                    typeof parsedData.total === "number" ? (parsedData.total as number) : bestMatch.transaction.total!,
+                  matchedDate: matchedDate,
+                  existingDate: existingDate,
                   daysDifference: daysDiff,
                   status: "auto_merged",
                   csvData: originalRow,
@@ -254,12 +249,20 @@ export async function saveTransactionsWithMatchingAction(
 
                 await markRowProcessed(importRow.id, transaction.id, "matched")
                 await incrementBatchCount(batch.id, user.id, "matchedCount")
+                matchedAccumulator += 1
               } catch (mergeError) {
                 // If merge fails, create new instead
                 console.error("Merge failed:", mergeError)
                 const transaction = await createTransaction(user.id, parsedData)
+                await logTransactionCreation(transaction.id, user.id, {
+                  source: "csv_import",
+                  batchId: batch.id,
+                  batchFilename: batch.filename,
+                  format: format || undefined,
+                })
                 await markRowError(importRow.id, `Merge failed: ${mergeError}`)
                 await incrementBatchCount(batch.id, user.id, "errorCount")
+                errorAccumulator += 1
               }
             } else {
               // Flag for manual review
@@ -267,9 +270,10 @@ export async function saveTransactionsWithMatchingAction(
                 batchId: batch.id,
                 transactionId: bestMatch.transaction.id,
                 confidence: bestMatch.confidence,
-                matchedAmount: parsedData.total as number,
-                matchedDate: parsedData.issuedAt as Date,
-                existingDate: bestMatch.transaction.issuedAt!,
+                matchedAmount:
+                  typeof parsedData.total === "number" ? (parsedData.total as number) : bestMatch.transaction.total!,
+                matchedDate: matchedDate,
+                existingDate: existingDate,
                 daysDifference: daysDiff,
                 status: "flagged",
                 csvData: originalRow,
@@ -280,31 +284,38 @@ export async function saveTransactionsWithMatchingAction(
                 `Flagged for review (${bestMatch.confidence}% confidence)`
               )
               await incrementBatchCount(batch.id, user.id, "skippedCount")
+              skippedAccumulator += 1
             }
           } else {
             // No match found - create new transaction
             const transaction = await createTransaction(user.id, parsedData)
+            await logTransactionCreation(transaction.id, user.id, {
+              source: "csv_import",
+              batchId: batch.id,
+              batchFilename: batch.filename,
+              format: format || undefined,
+            })
             await markRowProcessed(importRow.id, transaction.id, "created")
             await incrementBatchCount(batch.id, user.id, "createdCount")
+            createdAccumulator += 1
           }
         } catch (error) {
           console.error(`Error processing row ${rowNumber}:`, error)
           await incrementBatchCount(batch.id, user.id, "errorCount")
+          errorAccumulator += 1
         }
       }
 
-      // Update progress after each chunk
-      const stats = {
-        batchId: batch.id,
-        matched: (await getBatchStats(batch.id, user.id))?.matchedCount || 0,
-        created: (await getBatchStats(batch.id, user.id))?.createdCount || 0,
-        flagged: (await getBatchStats(batch.id, user.id))?.skippedCount || 0,
-        errors: (await getBatchStats(batch.id, user.id))?.errorCount || 0,
-      }
-
+      // Update progress after each chunk using accumulated counts
       await updateProgress(user.id, progressId, {
         current: Math.min(i + CHUNK_SIZE, processedTransactions.length),
-        data: stats,
+        data: {
+          batchId: batch.id,
+          matched: matchedAccumulator,
+          created: createdAccumulator,
+          flagged: skippedAccumulator,
+          errors: errorAccumulator,
+        },
       })
     }
 
@@ -351,10 +362,101 @@ async function parseCSVRowToTransaction(
   return transactionData as TransactionData
 }
 
-/**
- * Get batch statistics (helper to avoid circular dependency)
- */
-async function getBatchStats(batchId: string, userId: string) {
-  const { getBatchStats: getStats } = await import("@/models/import-batches")
-  return await getStats(batchId, userId)
+async function resolveProjectMappings(
+  userId: string,
+  input?: ProjectMappingsInput
+): Promise<Record<string, string>> {
+  if (!input) return {}
+  const resolved: Record<string, string> = {}
+  for (const [po, choice] of Object.entries(input)) {
+    if (!po) continue
+    if (choice.mode === "existing") {
+      resolved[po] = choice.code
+    } else {
+      const name = choice.name?.trim() || po
+      const project = await importProject(userId, name)
+      resolved[po] = project.code
+    }
+  }
+  return resolved
+}
+
+type PreparedTransaction = {
+  data: TransactionData
+  originalRow: Record<string, unknown>
+}
+
+async function prepareTransactions(
+  userId: string,
+  rows: Record<string, unknown>[],
+  format: CSVFormat,
+  projectMappingsInput?: ProjectMappingsInput
+): Promise<PreparedTransaction[]> {
+  if (format === "amazon") {
+    console.log("Amazon format detected - aggregating items by order...")
+    const amazonRows: AmazonRawRow[] = rows.map((row) => {
+      const amazonRow: Record<string, string> = {}
+      for (const [key, value] of Object.entries(row)) {
+        const normalizedKey = key.replace(/^\uFEFF/, "")
+        amazonRow[normalizedKey] = String(value ?? "")
+      }
+      return amazonRow as AmazonRawRow
+    })
+
+    const aggregatedOrders = aggregateAmazonRows(amazonRows)
+    const stats = getAggregationStats(amazonRows, aggregatedOrders)
+    console.log(
+      `Amazon aggregation: ${stats.totalRows} rows → ${stats.totalOrders} orders (${stats.reductionPercent}% reduction, avg ${stats.avgItemsPerOrder} items/order)`
+    )
+    const resolvedProjectMap = await resolveProjectMappings(userId, projectMappingsInput)
+
+    return aggregatedOrders.map((order) => ({
+      data: {
+        ...mapAmazonOrderToTransaction(order),
+        projectCode: order.purchaseOrderNumber ? resolvedProjectMap[order.purchaseOrderNumber] : undefined,
+      },
+      originalRow: {
+        orderId: order.orderId,
+        paymentReferenceId: order.paymentReferenceId,
+        paymentAmount: (order.paymentAmount / 100).toFixed(2),
+        paymentAmountCents: order.paymentAmount,
+        paymentDate: order.paymentDate.toISOString(),
+        purchaseOrderNumber: order.purchaseOrderNumber,
+      },
+    }))
+  }
+
+  if (format === "amex") {
+    return Promise.all(
+      rows.map(async (row) => ({
+        data: await mapAmexRowToTransaction(userId, stringifyRow(row)),
+        originalRow: row,
+      }))
+    )
+  }
+
+  if (format === "chase") {
+    return Promise.all(
+      rows.map(async (row) => ({
+        data: await mapChaseRowToTransaction(userId, stringifyRow(row)),
+        originalRow: row,
+      }))
+    )
+  }
+
+  return Promise.all(
+    rows.map(async (row) => ({
+      data: await parseCSVRowToTransaction(userId, row),
+      originalRow: row,
+    }))
+  )
+}
+
+const stringifyRow = (row: Record<string, unknown>): Record<string, string> => {
+  const result: Record<string, string> = {}
+  for (const [key, value] of Object.entries(row)) {
+    const normalizedKey = key.replace(/^\uFEFF/, "")
+    result[normalizedKey] = String(value ?? "")
+  }
+  return result
 }

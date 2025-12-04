@@ -1,12 +1,11 @@
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getCurrentUser } from "@/lib/auth"
 import { getImportBatches } from "@/models/import-batches"
-import { CheckCircle2, Clock, FileSpreadsheet, Flag, PlusCircle, XCircle, Eye } from "lucide-react"
+import { CheckCircle2, FileSpreadsheet, Flag, PlusCircle } from "lucide-react"
 import { Metadata } from "next"
 import Link from "next/link"
-import { formatDate } from "date-fns"
+import { ImportHistoryTable } from "@/components/import/import-history-table"
 
 export const metadata: Metadata = {
   title: "Import History",
@@ -89,72 +88,7 @@ export default async function ImportHistoryPage() {
       {/* Import Batches Table */}
       <main>
         {batches.length > 0 ? (
-          <div className="rounded-md border">
-            <Table>
-              <TableHeader>
-                <TableRow>
-                  <TableHead className="min-w-[200px]">Filename</TableHead>
-                  <TableHead>Status</TableHead>
-                  <TableHead className="text-center">Total Rows</TableHead>
-                  <TableHead className="text-center">
-                    <CheckCircle2 className="h-4 w-4 inline text-green-600" /> Merged
-                  </TableHead>
-                  <TableHead className="text-center">
-                    <PlusCircle className="h-4 w-4 inline text-blue-600" /> Created
-                  </TableHead>
-                  <TableHead className="text-center">
-                    <Flag className="h-4 w-4 inline text-yellow-600" /> Flagged
-                  </TableHead>
-                  <TableHead className="text-center">
-                    <XCircle className="h-4 w-4 inline text-red-600" /> Errors
-                  </TableHead>
-                  <TableHead>Imported At</TableHead>
-                  <TableHead className="text-right">Actions</TableHead>
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {batches.map((batch) => (
-                  <TableRow key={batch.id} className="cursor-pointer hover:bg-muted/50">
-                    <TableCell className="font-medium">{batch.filename}</TableCell>
-                    <TableCell>
-                      {batch.status === "completed" && (
-                        <span className="inline-flex items-center gap-1 text-green-600">
-                          <CheckCircle2 className="h-4 w-4" />
-                          Completed
-                        </span>
-                      )}
-                      {batch.status === "processing" && (
-                        <span className="inline-flex items-center gap-1 text-blue-600">
-                          <Clock className="h-4 w-4" />
-                          Processing
-                        </span>
-                      )}
-                      {batch.status === "failed" && (
-                        <span className="inline-flex items-center gap-1 text-red-600">
-                          <XCircle className="h-4 w-4" />
-                          Failed
-                        </span>
-                      )}
-                    </TableCell>
-                    <TableCell className="text-center">{batch.totalRows}</TableCell>
-                    <TableCell className="text-center text-green-600">{batch.matchedCount}</TableCell>
-                    <TableCell className="text-center text-blue-600">{batch.createdCount}</TableCell>
-                    <TableCell className="text-center text-yellow-600">{batch.skippedCount}</TableCell>
-                    <TableCell className="text-center text-red-600">{batch.errorCount}</TableCell>
-                    <TableCell>{batch.createdAt ? formatDate(batch.createdAt, "yyyy-MM-dd HH:mm") : "-"}</TableCell>
-                    <TableCell className="text-right">
-                      <Link href={`/import/history/${batch.id}`}>
-                        <Button variant="ghost" size="sm">
-                          <Eye className="h-4 w-4" />
-                          View
-                        </Button>
-                      </Link>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </div>
+          <ImportHistoryTable batches={batches} />
         ) : (
           <div className="flex flex-col items-center justify-center gap-2 h-full min-h-[400px]">
             <p className="text-muted-foreground">No import history yet. Start by importing your first CSV file!</p>

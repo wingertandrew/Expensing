@@ -1,16 +1,23 @@
 "use client"
 
-import { approveMatchAction, rejectMatchAction } from "@/app/(app)/import/history/[batchId]/review/actions"
+import {
+  approveMatchAction,
+  rejectMatchAction,
+  type ActionState,
+} from "@/app/(app)/import/history/[batchId]/review/actions"
 import { FormError } from "@/components/forms/error"
 import { Badge } from "@/components/ui/badge"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card"
-import { formatCurrency } from "@/lib/utils"
+import { formatCurrency, formatCurrencyUnits } from "@/lib/utils"
 import { Category, Project, Transaction, TransactionMatch } from "@/prisma/client"
 import { formatDate } from "date-fns"
 import { CheckCircle2, XCircle, Loader2, ArrowRight } from "lucide-react"
-import { startTransition, useActionState, useState } from "react"
+import { useState, useTransition } from "react"
 import { toast } from "sonner"
+import { extractCsvAmountInUnits } from "@/lib/csv/utils"
+import { SourceBadge } from "@/components/import/source-badge"
+import { CSVFormat } from "@/lib/csv/format-detector"
 
 type MatchWithTransaction = TransactionMatch & {
   transaction: Transaction & {
@@ -22,9 +29,11 @@ type MatchWithTransaction = TransactionMatch & {
 export function MatchReviewList({
   matches,
   batchId,
+  format,
 }: {
   matches: MatchWithTransaction[]
   batchId: string
+  format?: CSVFormat
 }) {
   const [processedMatches, setProcessedMatches] = useState<Set<string>>(new Set())
 
@@ -37,6 +46,7 @@ export function MatchReviewList({
             key={match.id}
             match={match}
             batchId={batchId}
+            format={format}
             onProcessed={(matchId) => {
               setProcessedMatches((prev) => new Set([...prev, matchId]))
             }}
@@ -57,24 +67,38 @@ export function MatchReviewList({
 function MatchReviewCard({
   match,
   batchId,
+  format,
   onProcessed,
 }: {
   match: MatchWithTransaction
   batchId: string
+  format?: CSVFormat
   onProcessed: (matchId: string) => void
 }) {
-  const [approveState, approveAction, isApproving] = useActionState(approveMatchAction, null)
-  const [rejectState, rejectAction, isRejecting] = useActionState(rejectMatchAction, null)
+  const [approveState, setApproveState] = useState<ActionState<{ matchId: string }>>(null)
+  const [rejectState, setRejectState] = useState<ActionState<{ matchId: string }>>(null)
+  const [isApproving, startApproveTransition] = useTransition()
+  const [isRejecting, startRejectTransition] = useTransition()
 
   const csvData = match.csvData as Record<string, unknown>
+  const safeString = (value: unknown) => (typeof value === "string" ? value : null)
+  const csvName = safeString(csvData.name)
+  const csvDescription = safeString(csvData.description)
+  const csvMerchant = safeString(csvData.merchant)
+  const csvImportReference = safeString(csvData.importReference)
+  const currency = match.transaction.currencyCode ?? match.transaction.convertedCurrencyCode ?? "USD"
+  const csvAmountUnits = extractCsvAmountInUnits(csvData)
+  const csvAmountDisplay =
+    csvAmountUnits !== null ? formatCurrencyUnits(csvAmountUnits, currency) : formatCurrency(match.matchedAmount, currency)
 
   const handleApprove = async () => {
     const formData = new FormData()
     formData.append("matchId", match.id)
     formData.append("batchId", batchId)
 
-    startTransition(async () => {
-      const result = await approveAction(formData)
+    startApproveTransition(async () => {
+      const result = await approveMatchAction(null, formData)
+      setApproveState(result)
       if (result?.success) {
         toast.success("Match approved and merged successfully")
         onProcessed(match.id)
@@ -89,8 +113,9 @@ function MatchReviewCard({
     formData.append("matchId", match.id)
     formData.append("batchId", batchId)
 
-    startTransition(async () => {
-      const result = await rejectAction(formData)
+    startRejectTransition(async () => {
+      const result = await rejectMatchAction(null, formData)
+      setRejectState(result)
       if (result?.success) {
         toast.success("Match rejected")
         onProcessed(match.id)
@@ -169,6 +194,7 @@ function MatchReviewCard({
           {/* CSV Data */}
           <div className="space-y-3">
             <div className="flex items-center gap-2 pb-2 border-b">
+              {format && <SourceBadge format={format} size="sm" showLabel={false} />}
               <h3 className="font-semibold text-sm uppercase tracking-wide text-blue-600">CSV Import Data</h3>
             </div>
 
@@ -180,36 +206,34 @@ function MatchReviewCard({
 
               <div>
                 <span className="text-xs font-medium text-muted-foreground">Amount</span>
-                <p className="text-lg font-bold text-blue-600">
-                  {formatCurrency(match.matchedAmount, match.transaction.currencyCode)}
-                </p>
+                <p className="text-lg font-bold text-blue-600">{csvAmountDisplay}</p>
               </div>
 
-              {csvData.name && (
+              {csvName && (
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">Name</span>
-                  <p className="font-medium">{csvData.name as string}</p>
+                  <p className="font-medium">{csvName}</p>
                 </div>
               )}
 
-              {csvData.description && (
+              {csvDescription && (
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">Description</span>
-                  <p className="text-sm">{csvData.description as string}</p>
+                  <p className="text-sm">{csvDescription}</p>
                 </div>
               )}
 
-              {csvData.merchant && (
+              {csvMerchant && (
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">Merchant</span>
-                  <p className="text-sm">{csvData.merchant as string}</p>
+                  <p className="text-sm">{csvMerchant}</p>
                 </div>
               )}
 
-              {csvData.importReference && (
+              {csvImportReference && (
                 <div>
                   <span className="text-xs font-medium text-muted-foreground">Reference</span>
-                  <p className="text-sm font-mono text-xs">{csvData.importReference as string}</p>
+                  <p className="text-sm font-mono text-xs">{csvImportReference}</p>
                 </div>
               )}
             </div>
@@ -238,7 +262,7 @@ function MatchReviewCard({
               <div>
                 <span className="text-xs font-medium text-muted-foreground">Amount</span>
                 <p className="text-lg font-bold text-green-600">
-                  {formatCurrency(match.transaction.total, match.transaction.currencyCode)}
+                  {formatCurrency(match.transaction.total ?? match.matchedAmount, currency)}
                 </p>
               </div>
 

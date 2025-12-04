@@ -29,8 +29,8 @@ export type MergeResult = {
  */
 export async function mergeTransaction(
   existingTransaction: Transaction,
-  csvData: ParsedCSVData,
-  confidence: number
+  csvData: ParsedCSVData
+
 ): Promise<MergeResult> {
   const updates: Partial<TransactionData> = {}
   const mergedFields: string[] = []

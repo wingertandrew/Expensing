@@ -4,18 +4,103 @@ import { Badge } from "@/components/ui/badge"
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table"
 import { getCurrentUser } from "@/lib/auth"
 import { getImportBatchById } from "@/models/import-batches"
-import { getTransactionMatchesByBatch, countFlaggedMatches } from "@/models/transaction-matches"
+import {
+  getTransactionMatchesByBatch,
+  countFlaggedMatches,
+  type TransactionMatchWithTransaction,
+} from "@/models/transaction-matches"
 import { getImportRowsByBatch } from "@/models/import-rows"
-import { CheckCircle2, Flag, PlusCircle, XCircle, ArrowLeft, FileEdit, AlertCircle } from "lucide-react"
+import { getTransactionsByIds } from "@/models/transactions"
+import { CheckCircle2, Flag, PlusCircle, XCircle, ArrowLeft, FileEdit, AlertCircle, Eye } from "lucide-react"
 import { Metadata } from "next"
 import Link from "next/link"
 import { notFound } from "next/navigation"
-import { formatDate } from "date-fns"
-import { formatCurrency } from "@/lib/utils"
+import { differenceInCalendarDays, formatDate } from "date-fns"
+import { formatCurrency, formatCurrencyUnits } from "@/lib/utils"
+import { extractCsvAmountInUnits } from "@/lib/csv/utils"
+import { BatchReviewWrapper } from "@/components/import/batch-review-wrapper"
+import { DeleteImportBatchButton } from "@/components/import/delete-batch-button"
+import { SourceBadge } from "@/components/import/source-badge"
+import { CSVFormat } from "@/lib/csv/format-detector"
 
 export const metadata: Metadata = {
   title: "Import Batch Details",
   description: "View detailed import batch results",
+}
+
+type ImportRowForView = Awaited<ReturnType<typeof getImportRowsByBatch>>[number]
+type CreatedTransaction = Awaited<ReturnType<typeof getTransactionsByIds>>[number]
+
+const getMatchedAmountDisplay = (match: TransactionMatchWithTransaction) => {
+  const currency = match.transaction.currencyCode ?? match.transaction.convertedCurrencyCode ?? "USD"
+  const csvAmount = extractCsvAmountInUnits(match.csvData)
+  if (csvAmount !== null) {
+    return formatCurrencyUnits(csvAmount, currency)
+  }
+  return formatCurrency(match.matchedAmount, currency)
+}
+
+const csvDateCandidates = [
+  "issuedAt",
+  "date",
+  "Date",
+  "transactionDate",
+  "Transaction Date",
+  "postedDate",
+  "Posted Date",
+]
+
+const parseDateLikeValue = (value: unknown): Date | null => {
+  if (!value) return null
+  if (value instanceof Date) return value
+  if (typeof value === "number") {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+  if (typeof value === "string" && value.trim()) {
+    const parsed = new Date(value)
+    return Number.isNaN(parsed.getTime()) ? null : parsed
+  }
+  return null
+}
+
+const extractDateFromRecord = (data: unknown): Date | null => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null
+  }
+
+  const record = data as Record<string, unknown>
+  for (const key of csvDateCandidates) {
+    if (!(key in record)) continue
+    const parsed = parseDateLikeValue(record[key])
+    if (parsed) {
+      return parsed
+    }
+  }
+  return null
+}
+
+const getCreatedRowCsvDate = (row: ImportRowForView, transaction?: CreatedTransaction): Date | null => {
+  return (
+    extractDateFromRecord(row.parsedData) ??
+    extractDateFromRecord(row.rawData) ??
+    transaction?.issuedAt ??
+    null
+  )
+}
+
+const getCreatedRowAmountDisplay = (row: ImportRowForView, transaction?: CreatedTransaction) => {
+  const currency = transaction?.currencyCode ?? transaction?.convertedCurrencyCode ?? "USD"
+  if (typeof transaction?.total === "number") {
+    return formatCurrency(transaction.total, currency)
+  }
+
+  const csvAmount = extractCsvAmountInUnits(row.rawData)
+  if (csvAmount !== null) {
+    return formatCurrencyUnits(csvAmount, currency)
+  }
+
+  return "-"
 }
 
 export default async function ImportBatchDetailsPage({
@@ -42,7 +127,18 @@ export default async function ImportBatchDetailsPage({
   const errorRows = importRows.filter((r) => r.status === "error")
   const skippedRows = importRows.filter((r) => r.status === "skipped")
 
+  const createdTransactionIds = Array.from(
+    new Set(
+      createdRows
+        .map((row) => row.transactionId)
+        .filter((transactionId): transactionId is string => Boolean(transactionId))
+    )
+  )
+  const createdTransactions = await getTransactionsByIds(user.id, createdTransactionIds)
+  const createdTransactionMap = new Map(createdTransactions.map((transaction) => [transaction.id, transaction]))
+
   const flaggedCount = await countFlaggedMatches(batchId)
+  const format = (batch.metadata as any)?.format as CSVFormat | undefined
 
   return (
     <>
@@ -54,7 +150,10 @@ export default async function ImportBatchDetailsPage({
               Back to History
             </Button>
           </Link>
-          <h2 className="text-3xl font-bold tracking-tight">{batch.filename}</h2>
+          <div className="flex items-center gap-3">
+            {format && <SourceBadge format={format} size="lg" showLabel={true} />}
+            <h2 className="text-3xl font-bold tracking-tight">{batch.filename}</h2>
+          </div>
           <p className="text-sm text-muted-foreground">
             Imported on {batch.createdAt ? formatDate(batch.createdAt, "PPpp") : "-"}
           </p>
@@ -68,6 +167,7 @@ export default async function ImportBatchDetailsPage({
               </Button>
             </Link>
           )}
+          <DeleteImportBatchButton batchId={batchId} filename={batch.filename} />
         </div>
       </header>
 
@@ -118,231 +218,14 @@ export default async function ImportBatchDetailsPage({
         </Card>
       </div>
 
-      {/* Auto-Merged Matches */}
-      {autoMergedMatches.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-green-600" />
-              Auto-Merged Transactions ({autoMergedMatches.length})
-            </CardTitle>
-            <CardDescription>High confidence matches that were automatically merged</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Transaction</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>CSV Date</TableHead>
-                    <TableHead>DB Date</TableHead>
-                    <TableHead>Days Diff</TableHead>
-                    <TableHead>Merged Fields</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {autoMergedMatches.map((match) => (
-                    <TableRow key={match.id}>
-                      <TableCell>
-                        <Badge className="bg-green-600">{match.confidence}%</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/transactions/${match.transactionId}`}
-                          className="text-blue-600 hover:underline"
-                        >
-                          {match.transaction.name || match.transaction.description || "View Transaction"}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{formatCurrency(match.matchedAmount, match.transaction.currencyCode)}</TableCell>
-                      <TableCell>{formatDate(match.matchedDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell>{formatDate(match.existingDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell className="text-center">{match.daysDifference}</TableCell>
-                      <TableCell>
-                        {Array.isArray(match.mergedFields) && match.mergedFields.length > 0 ? (
-                          <span className="text-xs text-muted-foreground">
-                            {(match.mergedFields as string[]).join(", ")}
-                          </span>
-                        ) : (
-                          <span className="text-xs text-muted-foreground">None</span>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Reviewed & Merged */}
-      {reviewedMergedMatches.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <CheckCircle2 className="h-5 w-5 text-blue-600" />
-              Reviewed & Merged ({reviewedMergedMatches.length})
-            </CardTitle>
-            <CardDescription>Matches that were manually reviewed and approved</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Transaction</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>CSV Date</TableHead>
-                    <TableHead>DB Date</TableHead>
-                    <TableHead>Days Diff</TableHead>
-                    <TableHead>Reviewed At</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {reviewedMergedMatches.map((match) => (
-                    <TableRow key={match.id}>
-                      <TableCell>
-                        <Badge className="bg-blue-600">{match.confidence}%</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/transactions/${match.transactionId}`}
-                          className="text-blue-600 hover:underline"
-                        >
-                          {match.transaction.name || match.transaction.description || "View Transaction"}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{formatCurrency(match.matchedAmount, match.transaction.currencyCode)}</TableCell>
-                      <TableCell>{formatDate(match.matchedDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell>{formatDate(match.existingDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell className="text-center">{match.daysDifference}</TableCell>
-                      <TableCell>
-                        {match.reviewedAt ? formatDate(match.reviewedAt, "yyyy-MM-dd HH:mm") : "-"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Flagged Matches */}
-      {flaggedMatches.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <Flag className="h-5 w-5 text-yellow-600" />
-              Flagged for Review ({flaggedMatches.length})
-            </CardTitle>
-            <CardDescription>
-              Lower confidence matches that need manual review
-              <Link href={`/import/history/${batchId}/review`} className="ml-2">
-                <Button variant="outline" size="sm">
-                  <FileEdit className="h-4 w-4" />
-                  Review Now
-                </Button>
-              </Link>
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Transaction</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>CSV Date</TableHead>
-                    <TableHead>DB Date</TableHead>
-                    <TableHead>Days Diff</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {flaggedMatches.map((match) => (
-                    <TableRow key={match.id}>
-                      <TableCell>
-                        <Badge className="bg-yellow-600">{match.confidence}%</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/transactions/${match.transactionId}`}
-                          className="text-blue-600 hover:underline"
-                        >
-                          {match.transaction.name || match.transaction.description || "View Transaction"}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{formatCurrency(match.matchedAmount, match.transaction.currencyCode)}</TableCell>
-                      <TableCell>{formatDate(match.matchedDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell>{formatDate(match.existingDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell className="text-center">{match.daysDifference}</TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
-
-      {/* Rejected Matches */}
-      {reviewedRejectedMatches.length > 0 && (
-        <Card className="mb-8">
-          <CardHeader>
-            <CardTitle className="flex items-center gap-2">
-              <XCircle className="h-5 w-5 text-gray-600" />
-              Reviewed & Rejected ({reviewedRejectedMatches.length})
-            </CardTitle>
-            <CardDescription>Matches that were manually reviewed and rejected</CardDescription>
-          </CardHeader>
-          <CardContent>
-            <div className="rounded-md border">
-              <Table>
-                <TableHeader>
-                  <TableRow>
-                    <TableHead>Confidence</TableHead>
-                    <TableHead>Transaction</TableHead>
-                    <TableHead>Amount</TableHead>
-                    <TableHead>CSV Date</TableHead>
-                    <TableHead>DB Date</TableHead>
-                    <TableHead>Days Diff</TableHead>
-                    <TableHead>Reviewed At</TableHead>
-                  </TableRow>
-                </TableHeader>
-                <TableBody>
-                  {reviewedRejectedMatches.map((match) => (
-                    <TableRow key={match.id}>
-                      <TableCell>
-                        <Badge className="bg-gray-600">{match.confidence}%</Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Link
-                          href={`/transactions/${match.transactionId}`}
-                          className="text-blue-600 hover:underline"
-                        >
-                          {match.transaction.name || match.transaction.description || "View Transaction"}
-                        </Link>
-                      </TableCell>
-                      <TableCell>{formatCurrency(match.matchedAmount, match.transaction.currencyCode)}</TableCell>
-                      <TableCell>{formatDate(match.matchedDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell>{formatDate(match.existingDate, "yyyy-MM-dd")}</TableCell>
-                      <TableCell className="text-center">{match.daysDifference}</TableCell>
-                      <TableCell>
-                        {match.reviewedAt ? formatDate(match.reviewedAt, "yyyy-MM-dd HH:mm") : "-"}
-                      </TableCell>
-                    </TableRow>
-                  ))}
-                </TableBody>
-              </Table>
-            </div>
-          </CardContent>
-        </Card>
-      )}
+      {/* Interactive Match Review Tables */}
+      <BatchReviewWrapper
+        autoMergedMatches={autoMergedMatches}
+        flaggedMatches={flaggedMatches}
+        reviewedMergedMatches={reviewedMergedMatches}
+        reviewedRejectedMatches={reviewedRejectedMatches}
+        batchFormat={format}
+      />
 
       {/* Created Transactions */}
       {createdRows.length > 0 && (
@@ -359,29 +242,70 @@ export default async function ImportBatchDetailsPage({
               <Table>
                 <TableHeader>
                   <TableRow>
-                    <TableHead>Row #</TableHead>
+                    <TableHead className="w-16 text-center">Row #</TableHead>
                     <TableHead>Transaction</TableHead>
-                    <TableHead>Status</TableHead>
+                    <TableHead className="text-center">Amount</TableHead>
+                    <TableHead>CSV Date</TableHead>
+                    <TableHead>DB Date</TableHead>
+                    <TableHead className="text-center">Days Diff</TableHead>
+                    <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {createdRows.map((row) => (
-                    <TableRow key={row.id}>
-                      <TableCell>{row.rowNumber}</TableCell>
-                      <TableCell>
-                        {row.transactionId ? (
-                          <Link href={`/transactions/${row.transactionId}`} className="text-blue-600 hover:underline">
-                            View Transaction
-                          </Link>
-                        ) : (
-                          <span className="text-muted-foreground">Not linked</span>
-                        )}
-                      </TableCell>
-                      <TableCell>
-                        <Badge className="bg-blue-600">Created</Badge>
-                      </TableCell>
-                    </TableRow>
-                  ))}
+                  {createdRows.map((row) => {
+                    const transaction = row.transactionId ? createdTransactionMap.get(row.transactionId) : undefined
+                    const csvDate = getCreatedRowCsvDate(row, transaction)
+                    const dbDate = transaction?.issuedAt ?? transaction?.createdAt ?? null
+                    const daysDiff =
+                      csvDate && dbDate ? Math.abs(differenceInCalendarDays(dbDate, csvDate)) : null
+
+                    return (
+                      <TableRow key={row.id}>
+                        <TableCell className="text-center text-sm text-muted-foreground">{row.rowNumber}</TableCell>
+                        <TableCell>
+                          {transaction ? (
+                            <>
+                              <Link
+                                href={`/transactions/${transaction.id}`}
+                                className="text-blue-600 hover:underline"
+                              >
+                                {transaction.name || transaction.description || "View Transaction"}
+                              </Link>
+                              <div className="flex flex-wrap items-center gap-2 mt-1 text-xs text-muted-foreground">
+                                {transaction.projectCode && <span>Project: {transaction.projectCode}</span>}
+                                {transaction.categoryCode && (
+                                  <span>Category: {transaction.categoryCode}</span>
+                                )}
+                                <Badge className="bg-blue-600">Created</Badge>
+                              </div>
+                            </>
+                          ) : row.transactionId ? (
+                            <span className="text-muted-foreground">Transaction data unavailable</span>
+                          ) : (
+                            <span className="text-muted-foreground">Transaction not linked</span>
+                          )}
+                        </TableCell>
+                        <TableCell className="text-center">
+                          {getCreatedRowAmountDisplay(row, transaction)}
+                        </TableCell>
+                        <TableCell>{csvDate ? formatDate(csvDate, "yyyy-MM-dd") : "-"}</TableCell>
+                        <TableCell>{dbDate ? formatDate(dbDate, "yyyy-MM-dd") : "-"}</TableCell>
+                        <TableCell className="text-center">{daysDiff ?? "-"}</TableCell>
+                        <TableCell className="text-right">
+                          {row.transactionId ? (
+                            <Link href={`/transactions/${row.transactionId}`}>
+                              <Button variant="ghost" size="sm">
+                                <Eye className="h-4 w-4" />
+                                View
+                              </Button>
+                            </Link>
+                          ) : (
+                            <span className="text-muted-foreground text-sm">No transaction</span>
+                          )}
+                        </TableCell>
+                      </TableRow>
+                    )
+                  })}
                 </TableBody>
               </Table>
             </div>

@@ -5,17 +5,18 @@
  * Supports Amazon Business Order Reports, American Express statements, and generic CSVs.
  */
 
-export type CSVFormat = 'amazon' | 'amex' | 'generic'
+export type CSVFormat = 'amazon' | 'amex' | 'chase' | 'generic'
 
 /**
  * Detect CSV format based on header row
  *
  * @param headers - Array of column headers from the first row
- * @returns Detected format: 'amazon', 'amex', or 'generic'
+ * @returns Detected format: 'amazon', 'amex', 'chase', or 'generic'
  *
  * Detection logic:
  * - Amazon: Requires 3+ signature columns (Order ID, ASIN, Charge Identifier, etc.)
  * - AmEx: Requires 3+ signature columns (Date, Description, Amount, Reference)
+ * - Chase: Requires 4+ signature columns (Transaction Date, Post Date, Description, Amount, Type)
  * - Generic: Fallback when no specific format is detected
  */
 export function detectCSVFormat(headers: string[]): CSVFormat {
@@ -26,9 +27,11 @@ export function detectCSVFormat(headers: string[]): CSVFormat {
   const amazonSignatures = [
     'order id',
     'asin',
-    'charge identifier',
+    'payment reference id',
     'payment instrument type',
-    'item quantity'
+    'item quantity',
+    'payment amount',
+    'item subtotal'
   ]
 
   const amazonMatches = amazonSignatures.filter(sig =>
@@ -37,6 +40,23 @@ export function detectCSVFormat(headers: string[]): CSVFormat {
 
   if (amazonMatches >= 3) {
     return 'amazon'
+  }
+
+  // Chase statement signature columns
+  const chaseSignatures = [
+    'transaction date',
+    'post date',
+    'description',
+    'amount',
+    'type'
+  ]
+
+  const chaseMatches = chaseSignatures.filter(sig =>
+    normalizedHeaders.some(h => h === sig)
+  ).length
+
+  if (chaseMatches >= 4) {
+    return 'chase'
   }
 
   // American Express statement signature columns
@@ -87,6 +107,16 @@ export function getFormatInfo(format: CSVFormat): {
           'Automatic duplicate detection',
           'Merchant and category tracking',
           'Reference number for exact matching'
+        ]
+      }
+    case 'chase':
+      return {
+        name: 'Chase Credit Card Statement',
+        description: 'Charges and refunds parsed automatically',
+        features: [
+          'Treats charges as expenses, refunds as income',
+          'Automatic duplicate detection',
+          'Includes Chase category metadata'
         ]
       }
     case 'generic':

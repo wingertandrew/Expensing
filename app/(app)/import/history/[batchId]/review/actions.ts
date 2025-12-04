@@ -4,6 +4,7 @@ import { getCurrentUser } from "@/lib/auth"
 import { approveMatch, rejectMatch, getTransactionMatchById } from "@/models/transaction-matches"
 import { mergeTransaction } from "@/lib/matching/merger"
 import { getTransactionById } from "@/models/transactions"
+import { logCsvMerge, logMatchReview } from "@/lib/audit-logger"
 import { revalidatePath } from "next/cache"
 
 export type ActionState<T = null> = {
@@ -16,7 +17,7 @@ export type ActionState<T = null> = {
  * Approve a flagged match and merge the transaction
  */
 export async function approveMatchAction(
-  _prevState: ActionState | null,
+  _prevState: ActionState<{ matchId: string }> | null,
   formData: FormData
 ): Promise<ActionState<{ matchId: string }>> {
   try {
@@ -46,12 +47,15 @@ export async function approveMatchAction(
     // Perform the merge
     const { mergedFields } = await mergeTransaction(
       transaction,
-      csvData,
-      match.confidence
+      csvData as any
     )
 
     // Mark the match as approved
     await approveMatch(matchId, user.id, mergedFields)
+
+    // Log the CSV merge and match review
+    await logCsvMerge(transaction.id, user.id, mergedFields, matchId, match.batch.filename)
+    await logMatchReview(transaction.id, user.id, matchId, "approved", match.batch.filename)
 
     // Revalidate paths
     revalidatePath(`/import/history/${batchId}`)
@@ -75,7 +79,7 @@ export async function approveMatchAction(
  * Reject a flagged match (don't merge)
  */
 export async function rejectMatchAction(
-  _prevState: ActionState | null,
+  _prevState: ActionState<{ matchId: string }> | null,
   formData: FormData
 ): Promise<ActionState<{ matchId: string }>> {
   try {
@@ -95,6 +99,9 @@ export async function rejectMatchAction(
 
     // Mark the match as rejected
     await rejectMatch(matchId, user.id)
+
+    // Log the match review
+    await logMatchReview(match.transactionId, user.id, matchId, "rejected", match.batch.filename)
 
     // Revalidate paths
     revalidatePath(`/import/history/${batchId}`)
@@ -117,7 +124,7 @@ export async function rejectMatchAction(
  * Approve all flagged matches in a batch
  */
 export async function approveAllMatchesAction(
-  _prevState: ActionState | null,
+  _prevState: ActionState<{ count: number }> | null,
   formData: FormData
 ): Promise<ActionState<{ count: number }>> {
   try {
@@ -139,9 +146,14 @@ export async function approveAllMatchesAction(
       if (!transaction) continue
 
       const csvData = match.csvData as Record<string, unknown>
-      const { mergedFields } = await mergeTransaction(transaction, csvData, match.confidence)
+      const { mergedFields } = await mergeTransaction(transaction, csvData as any)
 
       await approveMatch(matchId, user.id, mergedFields)
+
+      // Log the CSV merge and match review
+      await logCsvMerge(transaction.id, user.id, mergedFields, matchId, match.batch.filename)
+      await logMatchReview(transaction.id, user.id, matchId, "approved", match.batch.filename)
+
       approvedCount++
     }
 
@@ -166,7 +178,7 @@ export async function approveAllMatchesAction(
  * Reject all flagged matches in a batch
  */
 export async function rejectAllMatchesAction(
-  _prevState: ActionState | null,
+  _prevState: ActionState<{ count: number }> | null,
   formData: FormData
 ): Promise<ActionState<{ count: number }>> {
   try {
@@ -181,7 +193,14 @@ export async function rejectAllMatchesAction(
     let rejectedCount = 0
 
     for (const matchId of matchIds) {
+      const match = await getTransactionMatchById(matchId)
+      if (!match) continue
+
       await rejectMatch(matchId, user.id)
+
+      // Log the match review
+      await logMatchReview(match.transactionId, user.id, matchId, "rejected", match.batch.filename)
+
       rejectedCount++
     }
 

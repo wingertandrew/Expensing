@@ -145,6 +145,7 @@ export const importProject = async (userId: string, name: string) => {
 
   const existingProject = await prisma.project.findFirst({
     where: {
+      userId,
       OR: [{ code }, { name }],
     },
   })
@@ -161,6 +162,7 @@ export const importCategory = async (userId: string, name: string) => {
 
   const existingCategory = await prisma.category.findFirst({
     where: {
+      userId,
       OR: [{ code }, { name }],
     },
   })

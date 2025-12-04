@@ -49,7 +49,7 @@ export function mapAmazonOrderToTransaction(
     total: order.paymentAmount, // CRITICAL: Use payment amount, not sum of items
     currencyCode: 'USD',
     issuedAt: order.paymentDate, // CRITICAL: Use payment date for matching
-    importReference: order.chargeIdentifier, // For exact match detection
+    importReference: order.paymentReferenceId, // For exact match detection
     type: 'expense',
 
     // Items array (line items from the order)
@@ -59,7 +59,7 @@ export function mapAmazonOrderToTransaction(
     extra: {
       // Order identifiers
       orderId: order.orderId,
-      chargeIdentifier: order.chargeIdentifier,
+      paymentReferenceId: order.paymentReferenceId,
       orderDate: order.orderDate.toISOString(),
       invoiceNumber: order.invoiceNumber,
       purchaseOrderNumber: order.purchaseOrderNumber,

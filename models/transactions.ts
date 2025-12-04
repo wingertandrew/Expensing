@@ -96,6 +96,37 @@ export const getTransactions = cache(
         include: {
           category: true,
           project: true,
+          matches: {
+            select: {
+              id: true,
+              status: true,
+              confidence: true,
+              createdAt: true,
+              batchId: true,
+              batch: {
+                select: {
+                  filename: true,
+                  metadata: true,
+                },
+              },
+            },
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
+          auditLogs: {
+            select: {
+              action: true,
+              metadata: true,
+              createdAt: true,
+            },
+            where: {
+              action: 'created',
+            },
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
         },
         orderBy,
         take: pagination?.limit,
@@ -108,6 +139,37 @@ export const getTransactions = cache(
         include: {
           category: true,
           project: true,
+          matches: {
+            select: {
+              id: true,
+              status: true,
+              confidence: true,
+              createdAt: true,
+              batchId: true,
+              batch: {
+                select: {
+                  filename: true,
+                  metadata: true,
+                },
+              },
+            },
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
+          auditLogs: {
+            select: {
+              action: true,
+              metadata: true,
+              createdAt: true,
+            },
+            where: {
+              action: 'created',
+            },
+            orderBy: {
+              createdAt: 'asc',
+            },
+          },
         },
         orderBy,
       })
@@ -122,9 +184,52 @@ export const getTransactionById = cache(async (id: string, userId: string): Prom
     include: {
       category: true,
       project: true,
+      matches: {
+        select: {
+          id: true,
+          status: true,
+          confidence: true,
+          matchedAmount: true,
+          matchedDate: true,
+          createdAt: true,
+          reviewedAt: true,
+          reviewedBy: true,
+          batchId: true,
+          batch: {
+            select: {
+              filename: true,
+              createdAt: true,
+              metadata: true,
+            },
+          },
+        },
+        orderBy: {
+          createdAt: 'desc',
+        },
+      },
+      auditLogs: {
+        orderBy: {
+          createdAt: 'desc',
+        },
+      },
     },
   })
 })
+
+export const getTransactionsByIds = async (userId: string, ids: string[]): Promise<Transaction[]> => {
+  if (!ids.length) {
+    return []
+  }
+
+  return await prisma.transaction.findMany({
+    where: {
+      userId,
+      id: {
+        in: ids,
+      },
+    },
+  })
+}
 
 export const getTransactionsByFileId = cache(async (fileId: string, userId: string): Promise<Transaction[]> => {
   return await prisma.transaction.findMany({
@@ -193,6 +298,25 @@ const splitTransactionDataExtraFields = async (
   data: TransactionData,
   userId: string
 ): Promise<{ standard: TransactionData; extra: Prisma.InputJsonValue }> => {
+  // Built-in Transaction model fields (from Prisma schema)
+  // These should always be included in standard, even if not in custom fields
+  const builtInFields = new Set([
+    'name',
+    'description',
+    'merchant',
+    'total',
+    'currencyCode',
+    'convertedTotal',
+    'convertedCurrencyCode',
+    'type',
+    'categoryCode',
+    'projectCode',
+    'issuedAt',
+    'text',
+    'note',
+    'importReference',
+  ])
+
   const fields = await getFields(userId)
   const fieldMap = fields.reduce(
     (acc, field) => {
@@ -206,15 +330,34 @@ const splitTransactionDataExtraFields = async (
   const extra: Record<string, unknown> = {}
 
   Object.entries(data).forEach(([key, value]) => {
-    const fieldDef = fieldMap[key]
-    if (fieldDef) {
-      if (fieldDef.isExtra) {
-        extra[key] = value
+    // Skip special fields that are handled separately (items, files, extra)
+    if (key === 'items' || key === 'files' || key === 'extra') {
+      return
+    }
+
+    // Built-in fields always go to standard
+    if (builtInFields.has(key)) {
+      standard[key] = value
+    } else {
+      // Custom fields from the fields table
+      const fieldDef = fieldMap[key]
+      if (fieldDef) {
+        if (fieldDef.isExtra) {
+          extra[key] = value
+        } else {
+          standard[key] = value
+        }
       } else {
-        standard[key] = value
+        // Unknown fields go to extra
+        extra[key] = value
       }
     }
   })
+
+  // Merge existing extra field if present
+  if (data.extra) {
+    Object.assign(extra, data.extra)
+  }
 
   return { standard, extra: extra as Prisma.InputJsonValue }
 }
