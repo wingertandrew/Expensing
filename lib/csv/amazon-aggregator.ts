@@ -168,7 +168,27 @@ function parseCurrency(value: string): number {
 
   const num = parseFloat(normalized)
 
-  return isNaN(num) ? 0 : Math.round(num * 100) * sign
+  if (isNaN(num)) return 0
+
+  // Overflow protection: Check bounds before converting to cents
+  // Maximum reasonable amount: $100 billion = 10,000,000,000,000 cents
+  const MAX_AMOUNT_DOLLARS = 100_000_000_000 // $100 billion
+  const MIN_AMOUNT_DOLLARS = -100_000_000_000 // -$100 billion
+
+  if (Math.abs(num) > MAX_AMOUNT_DOLLARS) {
+    console.warn(`Currency amount out of bounds: ${value} (parsed as $${num}). Using 0 instead.`)
+    return 0
+  }
+
+  const cents = Math.round(num * 100) * sign
+
+  // Double check the result is within JavaScript's safe integer range
+  if (!Number.isSafeInteger(cents)) {
+    console.warn(`Currency conversion produced unsafe integer: ${value} -> ${cents}. Using 0 instead.`)
+    return 0
+  }
+
+  return cents
 }
 
 /**
