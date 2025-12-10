@@ -178,7 +178,13 @@ export const getTransactions = cache(
   }
 )
 
-export const getTransactionById = cache(async (id: string, userId: string): Promise<Transaction | null> => {
+export const getTransactionById = cache(async (
+  id: string,
+  userId: string,
+  options?: { auditLogLimit?: number }
+): Promise<Transaction | null> => {
+  const auditLogLimit = options?.auditLogLimit ?? 50 // Default to 50 most recent audit logs
+
   return await prisma.transaction.findUnique({
     where: { id, userId },
     include: {
@@ -211,9 +217,46 @@ export const getTransactionById = cache(async (id: string, userId: string): Prom
         orderBy: {
           createdAt: 'desc',
         },
+        take: auditLogLimit,
       },
     },
   })
+})
+
+/**
+ * Get audit logs for a transaction with pagination
+ */
+export const getTransactionAuditLogs = cache(async (
+  transactionId: string,
+  userId: string,
+  options?: { limit?: number; offset?: number }
+) => {
+  const limit = options?.limit ?? 50
+  const offset = options?.offset ?? 0
+
+  // Verify the transaction belongs to the user
+  const transaction = await prisma.transaction.findUnique({
+    where: { id: transactionId, userId },
+    select: { id: true },
+  })
+
+  if (!transaction) {
+    return { logs: [], total: 0 }
+  }
+
+  const [logs, total] = await Promise.all([
+    prisma.transactionAuditLog.findMany({
+      where: { transactionId },
+      orderBy: { createdAt: 'desc' },
+      take: limit,
+      skip: offset,
+    }),
+    prisma.transactionAuditLog.count({
+      where: { transactionId },
+    }),
+  ])
+
+  return { logs, total }
 })
 
 export const getTransactionsByIds = async (userId: string, ids: string[]): Promise<Transaction[]> => {
@@ -237,7 +280,43 @@ export const getTransactionsByFileId = cache(async (fileId: string, userId: stri
   })
 })
 
+/**
+ * Validate that required fields are present in transaction data
+ * Throws an error if validation fails
+ */
+async function validateRequiredFields(userId: string, data: TransactionData): Promise<void> {
+  const fields = await getFields(userId)
+  const errors: string[] = []
+
+  // Check required standard fields
+  for (const field of fields) {
+    if (field.isRequired && !field.isExtra) {
+      const value = data[field.code]
+      if (value === null || value === undefined || value === '') {
+        errors.push(`Required field '${field.name}' (${field.code}) is missing`)
+      }
+    }
+  }
+
+  // Check required extra fields (stored in extra JSON)
+  for (const field of fields) {
+    if (field.isRequired && field.isExtra) {
+      const value = data.extra?.[field.code]
+      if (value === null || value === undefined || value === '') {
+        errors.push(`Required custom field '${field.name}' (${field.code}) is missing`)
+      }
+    }
+  }
+
+  if (errors.length > 0) {
+    throw new Error(`Transaction validation failed:\n${errors.join('\n')}`)
+  }
+}
+
 export const createTransaction = async (userId: string, data: TransactionData): Promise<Transaction> => {
+  // Validate required fields before creating
+  await validateRequiredFields(userId, data)
+
   const { standard, extra } = await splitTransactionDataExtraFields(data, userId)
 
   return await prisma.transaction.create({
@@ -251,6 +330,22 @@ export const createTransaction = async (userId: string, data: TransactionData): 
 }
 
 export const updateTransaction = async (id: string, userId: string, data: TransactionData): Promise<Transaction> => {
+  // For updates, fetch existing transaction and merge with new data
+  const existing = await getTransactionById(id, userId)
+  if (!existing) {
+    throw new Error('Transaction not found')
+  }
+
+  // Merge existing data with update data
+  const mergedData: TransactionData = {
+    ...existing,
+    ...data,
+    extra: { ...(existing.extra as Record<string, unknown> || {}), ...(data.extra || {}) },
+  }
+
+  // Validate required fields on merged data
+  await validateRequiredFields(userId, mergedData)
+
   const { standard, extra } = await splitTransactionDataExtraFields(data, userId)
 
   return await prisma.transaction.update({

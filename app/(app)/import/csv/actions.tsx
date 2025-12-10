@@ -11,7 +11,7 @@ import { differenceInDays } from "date-fns"
 import { findBestMatch, isAlreadyMatchedInBatch } from "@/lib/matching/finder"
 import { mergeTransaction, validateMergeCompatibility } from "@/lib/matching/merger"
 import { shouldAutoMerge } from "@/lib/matching/algorithm"
-import { createImportBatch, updateImportBatch, incrementBatchCount } from "@/models/import-batches"
+import { createImportBatch, updateImportBatch, incrementBatchCount, completeBatch, completeBatchWithErrors, calculateContentHash, findDuplicateBatch } from "@/models/import-batches"
 import { createImportRow, markRowProcessed, markRowError, markRowSkipped } from "@/models/import-rows"
 import { createTransactionMatch } from "@/models/transaction-matches"
 import { updateProgress, getOrCreateProgress } from "@/models/progress"
@@ -25,9 +25,9 @@ import { importProject } from "@/models/export_and_import"
 import { logTransactionCreation } from "@/lib/audit-logger"
 
 export async function parseCSVAction(
-  _prevState: ActionState<{ rows: string[][], format: CSVFormat }> | null,
+  _prevState: ActionState<{ rows: string[][], format: CSVFormat, contentHash: string }> | null,
   formData: FormData
-): Promise<ActionState<{ rows: string[][], format: CSVFormat }>> {
+): Promise<ActionState<{ rows: string[][], format: CSVFormat, contentHash: string }>> {
   const file = formData.get("file") as File
   if (!file) {
     return { success: false, error: "No file uploaded" }
@@ -39,6 +39,11 @@ export async function parseCSVAction(
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer())
+    const content = buffer.toString('utf-8')
+
+    // Calculate content hash for duplicate detection
+    const contentHash = calculateContentHash(content)
+
     const rows: string[][] = []
 
     const parser = parse()
@@ -55,9 +60,9 @@ export async function parseCSVAction(
     // Detect CSV format from header row
     const format = rows.length > 0 ? detectCSVFormat(rows[0]) : 'generic'
 
-    console.log(`CSV format detected: ${format} (${rows.length} rows)`)
+    console.log(`CSV format detected: ${format} (${rows.length} rows, hash: ${contentHash.substring(0, 8)}...)`)
 
-    return { success: true, data: { rows, format } }
+    return { success: true, data: { rows, format, contentHash } }
   } catch (error) {
     console.error("Error parsing CSV:", error)
     return { success: false, error: "Failed to parse CSV file" }
@@ -108,6 +113,7 @@ export async function saveTransactionsWithMatchingAction(
     // Parse form data
     const rows = JSON.parse(formData.get("rows") as string) as Record<string, unknown>[]
     const filename = (formData.get("filename") as string) || "upload.csv"
+    const contentHash = (formData.get("contentHash") as string) || null
     const columnMappings = JSON.parse(formData.get("columnMappings") as string) as Record<
       string,
       string
@@ -120,6 +126,15 @@ export async function saveTransactionsWithMatchingAction(
 
     console.log(`Processing ${rows.length} rows in ${format} format`)
 
+    // Check for duplicate CSV import
+    let duplicateBatch = null
+    if (contentHash) {
+      duplicateBatch = await findDuplicateBatch(user.id, contentHash)
+      if (duplicateBatch) {
+        console.warn(`Duplicate CSV detected! Previously imported as batch ${duplicateBatch.id} on ${duplicateBatch.createdAt}`)
+      }
+    }
+
     // Process rows based on format
     const originalRowCount = rows.length
     const processedTransactions = await prepareTransactions(user.id, rows, format, projectMappings)
@@ -129,11 +144,17 @@ export async function saveTransactionsWithMatchingAction(
     // Create import batch
     const batch = await createImportBatch(user.id, {
       filename,
+      contentHash,
       totalRows: processedTransactions.length,
       metadata: {
         columnMappings: format === 'generic' ? columnMappings : {},
         format,
         originalRowCount, // Track original for audit (Amazon only)
+        ...(duplicateBatch && {
+          duplicateWarning: true,
+          previousBatchId: duplicateBatch.id,
+          previousImportDate: duplicateBatch.createdAt.toISOString(),
+        }),
       },
     })
 
@@ -319,11 +340,12 @@ export async function saveTransactionsWithMatchingAction(
       })
     }
 
-    // Mark batch as completed
-    await updateImportBatch(batch.id, user.id, {
-      status: "completed",
-      completedAt: new Date(),
-    })
+    // Mark batch as completed (with or without errors)
+    if (errorAccumulator > 0) {
+      await completeBatchWithErrors(batch.id, user.id)
+    } else {
+      await completeBatch(batch.id, user.id)
+    }
 
     revalidatePath("/import/csv")
     revalidatePath("/import/history")
