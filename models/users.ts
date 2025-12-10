@@ -66,3 +66,59 @@ export function updateUser(userId: string, data: Prisma.UserUpdateInput) {
     data,
   })
 }
+
+/**
+ * Get all users (for user management in self-hosted mode)
+ */
+export const getAllUsers = cache(async () => {
+  return await prisma.user.findMany({
+    orderBy: { createdAt: 'asc' },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      avatar: true,
+      isAdmin: true,
+      createdAt: true,
+    },
+  })
+})
+
+/**
+ * Create a new user profile (for self-hosted mode)
+ */
+export async function createUserProfile(data: { name: string; email?: string; isAdmin?: boolean }) {
+  const email = data.email || `${data.name.toLowerCase().replace(/\s+/g, '.')}@local`
+  return await prisma.user.create({
+    data: {
+      name: data.name,
+      email,
+      isAdmin: data.isAdmin || false,
+      membershipPlan: 'unlimited',
+    },
+  })
+}
+
+/**
+ * Delete a user profile (cannot delete admin users)
+ */
+export async function deleteUserProfile(userId: string) {
+  const user = await prisma.user.findUnique({ where: { id: userId } })
+  if (!user) {
+    throw new Error('User not found')
+  }
+  if (user.isAdmin) {
+    throw new Error('Cannot delete admin user')
+  }
+  return await prisma.user.delete({ where: { id: userId } })
+}
+
+/**
+ * Update user admin status
+ */
+export async function setUserAdmin(userId: string, isAdmin: boolean) {
+  return await prisma.user.update({
+    where: { id: userId },
+    data: { isAdmin },
+  })
+}

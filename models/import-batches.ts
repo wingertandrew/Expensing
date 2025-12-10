@@ -7,6 +7,7 @@ export type ImportBatchData = {
   filename: string
   contentHash?: string | null
   status?: string
+  contentHash?: string | null
   totalRows?: number
   matchedCount?: number
   createdCount?: number
@@ -46,6 +47,7 @@ export const createImportBatch = async (
       filename: data.filename,
       contentHash: data.contentHash || null,
       status: data.status || "processing",
+      contentHash: data.contentHash || null,
       totalRows: data.totalRows || 0,
       matchedCount: data.matchedCount || 0,
       createdCount: data.createdCount || 0,
