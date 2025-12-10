@@ -256,3 +256,19 @@ export const deleteTransactionMatchesByBatch = async (
     where: { batchId },
   })
 }
+
+/**
+ * Undo/revert a merge by marking the match as undone
+ * This doesn't actually revert the transaction data, just marks the match as undone
+ * so it can be reviewed again or manually reverted
+ */
+export const undoMatch = async (id: string, userId: string): Promise<TransactionMatch> => {
+  return await prisma.transactionMatch.update({
+    where: { id },
+    data: {
+      status: "undone",
+      reviewedBy: userId,
+      reviewedAt: new Date(),
+    },
+  })
+}

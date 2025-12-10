@@ -1,7 +1,7 @@
 "use server"
 
 import { getCurrentUser } from "@/lib/auth"
-import { approveMatch, rejectMatch, getTransactionMatchById } from "@/models/transaction-matches"
+import { approveMatch, rejectMatch, getTransactionMatchById, undoMatch } from "@/models/transaction-matches"
 import { mergeTransaction } from "@/lib/matching/merger"
 import { getTransactionById } from "@/models/transactions"
 import { logCsvMerge, logMatchReview } from "@/lib/audit-logger"
@@ -217,6 +217,61 @@ export async function rejectAllMatchesAction(
     return {
       success: false,
       error: error instanceof Error ? error.message : "Failed to reject all matches",
+    }
+  }
+}
+
+/**
+ * Undo an auto-merged or reviewed match
+ * Marks the match as undone so it can be reviewed again
+ */
+export async function undoMatchAction(
+  _prevState: ActionState<{ matchId: string }> | null,
+  formData: FormData
+): Promise<ActionState<{ matchId: string }>> {
+  try {
+    const user = await getCurrentUser()
+    const matchId = formData.get("matchId") as string
+    const batchId = formData.get("batchId") as string
+
+    if (!matchId || !batchId) {
+      return { success: false, error: "Missing match ID or batch ID" }
+    }
+
+    // Get the match details
+    const match = await getTransactionMatchById(matchId)
+    if (!match) {
+      return { success: false, error: "Match not found" }
+    }
+
+    // Check that the match is in a state that can be undone
+    if (match.status !== "auto_merged" && match.status !== "reviewed_merged") {
+      return {
+        success: false,
+        error: `Cannot undo match with status: ${match.status}. Only auto-merged or reviewed matches can be undone.`
+      }
+    }
+
+    // Mark the match as undone
+    await undoMatch(matchId, user.id)
+
+    // Log the undo action
+    await logMatchReview(match.transactionId, user.id, matchId, "undone", match.batch.filename)
+
+    // Revalidate paths
+    revalidatePath(`/import/history/${batchId}`)
+    revalidatePath(`/import/history/${batchId}/review`)
+    revalidatePath(`/transactions/${match.transactionId}`)
+
+    return {
+      success: true,
+      data: { matchId },
+    }
+  } catch (error) {
+    console.error("Error undoing match:", error)
+    return {
+      success: false,
+      error: error instanceof Error ? error.message : "Failed to undo match",
     }
   }
 }

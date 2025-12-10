@@ -16,6 +16,7 @@ model User {
   email               String        @unique
   name                String
   avatar              String?
+  isAdmin             Boolean       @default(false) @map("is_admin")
   settings            Setting[]
   categories          Category[]
   projects            Project[]
@@ -250,6 +251,7 @@ model ImportBatch {
   userId             String             @map("user_id") @db.Uuid
   user               User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   filename           String
+  contentHash        String?            @map("content_hash")
   status             String             @default("processing")
   totalRows          Int                @default(0) @map("total_rows")
   matchedCount       Int                @default(0) @map("matched_count")
@@ -264,6 +266,7 @@ model ImportBatch {
 
   @@index([userId])
   @@index([createdAt])
+  @@index([contentHash])
   @@map("import_batches")
 }
 

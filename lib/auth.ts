@@ -6,10 +6,12 @@ import { prismaAdapter } from "better-auth/adapters/prisma"
 import { APIError } from "better-auth/api"
 import { nextCookies } from "better-auth/next-js"
 import { emailOTP } from "better-auth/plugins/email-otp"
-import { headers } from "next/headers"
+import { cookies, headers } from "next/headers"
 import { redirect } from "next/navigation"
 import { prisma } from "./db"
 import { resend, sendOTPCodeEmail } from "./email"
+
+export const ACTING_AS_COOKIE = "taxhacker_acting_as"
 
 export type UserProfile = {
   id: string
@@ -75,6 +77,18 @@ export async function getSession() {
 
 export async function getCurrentUser(): Promise<User> {
   if (config.selfHosted.isEnabled) {
+    // Check if user is "acting as" another user
+    const cookieStore = await cookies()
+    const actingAsUserId = cookieStore.get(ACTING_AS_COOKIE)?.value
+
+    if (actingAsUserId) {
+      const actingAsUser = await getUserById(actingAsUserId)
+      if (actingAsUser) {
+        return actingAsUser
+      }
+    }
+
+    // Fall back to default self-hosted user
     const user = await getSelfHostedUser()
     if (user) {
       return user
@@ -94,6 +108,23 @@ export async function getCurrentUser(): Promise<User> {
 
   // No session or user found
   redirect(config.auth.loginUrl)
+}
+
+/**
+ * Get the admin user who is performing the action
+ * In self-hosted mode, this returns the self-hosted user regardless of who they're acting as
+ */
+export async function getAdminUser(): Promise<User | null> {
+  if (config.selfHosted.isEnabled) {
+    return await getSelfHostedUser()
+  }
+
+  const session = await getSession()
+  if (session && session.user) {
+    return await getUserById(session.user.id)
+  }
+
+  return null
 }
 
 export function isSubscriptionExpired(user: User) {

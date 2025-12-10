@@ -6,6 +6,9 @@ import {
   DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu"
 import { SidebarMenuButton } from "@/components/ui/sidebar"
@@ -13,14 +16,40 @@ import { UserProfile } from "@/lib/auth"
 import { authClient } from "@/lib/auth-client"
 import { PLANS } from "@/lib/stripe"
 import { formatBytes } from "@/lib/utils"
-import { CreditCard, LogOut, MoreVertical, Settings, Sparkles, User } from "lucide-react"
+import { Check, CreditCard, LogOut, MoreVertical, Settings, Sparkles, User, Users } from "lucide-react"
 import Link from "next/link"
-import { redirect } from "next/navigation"
+import { redirect, useRouter } from "next/navigation"
+import { switchUserAction } from "@/app/(app)/settings/users/actions"
 
-export default function SidebarUser({ profile, isSelfHosted }: { profile: UserProfile; isSelfHosted: boolean }) {
+type SimpleUser = {
+  id: string
+  name: string
+  email: string
+  avatar: string | null
+  isAdmin: boolean
+}
+
+export default function SidebarUser({
+  profile,
+  isSelfHosted,
+  allUsers = [],
+}: {
+  profile: UserProfile
+  isSelfHosted: boolean
+  allUsers?: SimpleUser[]
+}) {
+  const router = useRouter()
+
   const signOut = async () => {
     await authClient.signOut({})
     redirect("/")
+  }
+
+  const handleSwitchUser = async (userId: string) => {
+    const formData = new FormData()
+    formData.set("userId", userId)
+    await switchUserAction(null, formData)
+    router.refresh()
   }
 
   return (
@@ -87,6 +116,42 @@ export default function SidebarUser({ profile, isSelfHosted }: { profile: UserPr
             </DropdownMenuItem>
           )}
         </DropdownMenuGroup>
+        {isSelfHosted && allUsers.length > 1 && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuSub>
+              <DropdownMenuSubTrigger className="flex items-center gap-2">
+                <Users className="h-4 w-4" />
+                Switch User
+              </DropdownMenuSubTrigger>
+              <DropdownMenuSubContent>
+                {allUsers.map((user) => (
+                  <DropdownMenuItem
+                    key={user.id}
+                    onClick={() => handleSwitchUser(user.id)}
+                    className="flex items-center gap-2"
+                  >
+                    <Avatar className="h-5 w-5">
+                      <AvatarImage src={user.avatar || undefined} alt={user.name} />
+                      <AvatarFallback className="text-xs">
+                        <User className="h-3 w-3" />
+                      </AvatarFallback>
+                    </Avatar>
+                    <span className="flex-1">{user.name}</span>
+                    {user.id === profile.id && <Check className="h-4 w-4 text-primary" />}
+                  </DropdownMenuItem>
+                ))}
+                <DropdownMenuSeparator />
+                <DropdownMenuItem asChild>
+                  <Link href="/settings/users" className="flex items-center gap-2">
+                    <Settings className="h-4 w-4" />
+                    Manage Users
+                  </Link>
+                </DropdownMenuItem>
+              </DropdownMenuSubContent>
+            </DropdownMenuSub>
+          </>
+        )}
         {!isSelfHosted && (
           <>
             <DropdownMenuSeparator />

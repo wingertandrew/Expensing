@@ -4,6 +4,7 @@ import { TransactionData, updateTransaction } from "@/models/transactions"
 export type ParsedCSVData = TransactionData & {
   importReference?: string | null
   receiptFileId?: string | null
+  convertedCurrencyCode?: string | null
 }
 
 export type MergeResult = {
@@ -126,6 +127,17 @@ export function validateMergeCompatibility(
   ) {
     errors.push(
       `Currency mismatch: DB has ${existingTransaction.currencyCode}, CSV has ${csvData.currencyCode}`
+    )
+  }
+
+  // Converted currency should also match if both are present
+  if (
+    existingTransaction.convertedCurrencyCode &&
+    csvData.convertedCurrencyCode &&
+    existingTransaction.convertedCurrencyCode !== csvData.convertedCurrencyCode
+  ) {
+    errors.push(
+      `Converted currency mismatch: DB has ${existingTransaction.convertedCurrencyCode}, CSV has ${csvData.convertedCurrencyCode}`
     )
   }
 

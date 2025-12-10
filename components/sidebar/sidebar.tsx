@@ -28,14 +28,24 @@ import { Blinker } from "./blinker"
 import { SidebarMenuItemWithHighlight } from "./sidebar-item"
 import SidebarUser from "./sidebar-user"
 
+type SimpleUser = {
+  id: string
+  name: string
+  email: string
+  avatar: string | null
+  isAdmin: boolean
+}
+
 export function AppSidebar({
   profile,
   unsortedFilesCount,
   isSelfHosted,
+  allUsers = [],
 }: {
   profile: UserProfile
   unsortedFilesCount: number
   isSelfHosted: boolean
+  allUsers?: SimpleUser[]
 }) {
   const { open, setOpenMobile } = useSidebar()
   const pathname = usePathname()
@@ -169,7 +179,7 @@ export function AppSidebar({
             <SidebarGroupContent>
               <SidebarMenu>
                 <SidebarMenuItem>
-                  <SidebarUser profile={profile} isSelfHosted={isSelfHosted} />
+                  <SidebarUser profile={profile} isSelfHosted={isSelfHosted} allUsers={allUsers} />
                 </SidebarMenuItem>
               </SidebarMenu>
             </SidebarGroupContent>

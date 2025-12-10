@@ -1,10 +1,12 @@
 import { prisma } from "@/lib/db"
 import { ImportBatch, Prisma } from "@/prisma/client"
 import { cache } from "react"
+import crypto from "crypto"
 
 export type ImportBatchData = {
   filename: string
   status?: string
+  contentHash?: string | null
   totalRows?: number
   matchedCount?: number
   createdCount?: number
@@ -23,6 +25,15 @@ export type ImportBatchStats = {
 }
 
 /**
+ * Calculate SHA-256 hash of CSV content for duplicate detection
+ * @param content - The CSV file content as string
+ * @returns Hash string
+ */
+export function calculateContentHash(content: string): string {
+  return crypto.createHash('sha256').update(content).digest('hex')
+}
+
+/**
  * Create a new import batch
  */
 export const createImportBatch = async (
@@ -34,6 +45,7 @@ export const createImportBatch = async (
       userId,
       filename: data.filename,
       status: data.status || "processing",
+      contentHash: data.contentHash || null,
       totalRows: data.totalRows || 0,
       matchedCount: data.matchedCount || 0,
       createdCount: data.createdCount || 0,
@@ -44,6 +56,24 @@ export const createImportBatch = async (
     },
   })
 }
+
+/**
+ * Check if a batch with the same content hash already exists
+ * Returns the existing batch if found, null otherwise
+ */
+export const findDuplicateBatch = cache(
+  async (userId: string, contentHash: string): Promise<ImportBatch | null> => {
+    return await prisma.importBatch.findFirst({
+      where: {
+        userId,
+        contentHash,
+      },
+      orderBy: {
+        createdAt: 'desc',
+      },
+    })
+  }
+)
 
 /**
  * Get an import batch by ID
@@ -146,6 +176,23 @@ export const completeBatch = async (id: string, userId: string): Promise<ImportB
     where: { id, userId },
     data: {
       status: "completed",
+      completedAt: new Date(),
+    },
+  })
+}
+
+/**
+ * Mark a batch as completed with errors
+ * Use this when the batch finished processing but some rows had errors
+ */
+export const completeBatchWithErrors = async (
+  id: string,
+  userId: string
+): Promise<ImportBatch> => {
+  return await prisma.importBatch.update({
+    where: { id, userId },
+    data: {
+      status: "completed_with_errors",
       completedAt: new Date(),
     },
   })
